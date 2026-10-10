@@ -130,25 +130,25 @@ bot.hears(solanaAddressRegex, async (ctx) => {
     });
 });
 
-// --- LISTENER TOMBOL REVISI (RADAR BRUTAL ANTI-GAGAL) ---
+// --- LISTENER TOMBOL REVISI (ANTI-GAGAL COPY-PASTE) ---
 
-bot.action(/^buy_([0-9.]+)_(.+)$/, async (ctx) => {
+bot.action(/^buy_([0-9.]+)_(.+)\$/, async (ctx) => {
     const nominal = ctx.match[1];
     const ca = ctx.match[2];
-    await ctx.answerCbQuery(`Mengeksekusi \${nominal} SOL...`); 
-    await ctx.reply(`⚡ (Simulasi) Mengeksekusi Beli untuk CA:\n\`${ca}\`\n💰 Nominal: *\${nominal} SOL*\n⚙️ Status: Memanggil Helius RPC...`, { parse_mode: 'Markdown' });
+    await ctx.answerCbQuery("Mengeksekusi " + nominal + " SOL..."); 
+    await ctx.reply("⚡ (Simulasi) Mengeksekusi Beli untuk CA:\n`" + ca + "`\n💰 Nominal: *" + nominal + " SOL*\n⚙️ Status: Memanggil Helius RPC...", { parse_mode: 'Markdown' });
 });
 
-bot.action(/^buy_max_(.+)$/, async (ctx) => {
+bot.action(/^buy_max_(.+)\$/, async (ctx) => {
     const ca = ctx.match[1];
     await ctx.answerCbQuery('Menghitung saldo maksimal...');
-    await ctx.reply(`⚡ (Simulasi) Mengeksekusi Beli MAX (Seluruh Saldo) untuk CA:\n\`${ca}\``, { parse_mode: 'Markdown' });
+    await ctx.reply("⚡ (Simulasi) Mengeksekusi Beli MAX (Seluruh Saldo) untuk CA:\n`" + ca + "`", { parse_mode: 'Markdown' });
 });
 
-bot.action(/^custom_(.+)$/, async (ctx) => {
+bot.action(/^custom_(.+)\$/, async (ctx) => {
     const ca = ctx.match[1];
     await ctx.answerCbQuery('Menu Custom dibuka'); 
-    await ctx.reply(`✏️ *Opsi Custom Nominal*\n\nBalas pesan ini dengan perintah:\n\n\`/beli ${ca} NOMINAL\`\n\nContoh: \`/beli ${ca} 2.5\``, { parse_mode: 'Markdown' });
+    await ctx.reply("✏️ *Opsi Custom Nominal*\n\nBalas pesan ini dengan perintah:\n\n`/beli " + ca + " NOMINAL`\n\nContoh: `/beli " + ca + " 2.5`", { parse_mode: 'Markdown' });
 });
 
 bot.action('batal_aksi', async (ctx) => {
@@ -163,7 +163,7 @@ bot.command('beli', async (ctx) => {
     const ca = pesan[1];
     const nominal = pesan[2];
 
-    await ctx.reply(`⚡ (Simulasi) Eksekusi Custom Beli...\nCA: \`\${ca}\`\nNominal: *${nominal} SOL*`, { parse_mode: 'Markdown' });
+    await ctx.reply("⚡ (Simulasi) Eksekusi Custom Beli...\nCA: `" + ca + "`\nNominal: *" + nominal + " SOL*", { parse_mode: 'Markdown' });
 });
 // ========================================================
 
