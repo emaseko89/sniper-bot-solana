@@ -82,7 +82,6 @@ bot.command('saldo', async (ctx) => {
 });
 
 bot.command('tarik', async (ctx) => {
-    // Fungsi simulasi penarikan tetap sama untuk demo
     const userId = ctx.from.id;
     const db = bacaDatabase();
     if (!db[userId]) return ctx.reply('❌ Anda belum punya dompet.');
@@ -146,4 +145,100 @@ const eksekusiBeli = async (ctx, ca, nominalSol, isMax = false) => {
         
         let eksekusiSol = isMax ? (saldoLamports / LAMPORTS_PER_SOL) - 0.005 : parseFloat(nominalSol);
         if (eksekusiSol <= 0 || (eksekusiSol * LAMPORTS_PER_SOL) > saldoLamports) {
-            return ctx.telegram.editMessageText(ctx.
+            return ctx.telegram.editMessageText(ctx.chat.id, pesanProses.message_id, null, "❌ Saldo SOL tidak mencukupi untuk nominal eksekusi & biaya gas.");
+        }
+
+        // Kalkulasi Salami Slicing (Fee 1%)
+        const totalLamports = Math.floor(eksekusiSol * LAMPORTS_PER_SOL);
+        const feeLamports = Math.floor(totalLamports * 0.01);
+        const swapLamports = totalLamports - feeLamports;
+
+        await ctx.telegram.editMessageText(ctx.chat.id, pesanProses.message_id, null, "🚀 *[1/3] Mendapatkan Rute Swap Jupiter DEX...*", { parse_mode: 'Markdown' });
+
+        // 1. Dapatkan Rute Jupiter
+        const jupQuoteUrl = `https://quote-api.jup.ag/v6/quote?inputMint=So11111111111111111111111111111111111111112&outputMint=${ca}&amount=${swapLamports}&slippageBps=1500`; 
+        const quoteRes = await fetch(jupQuoteUrl);
+        const quoteData = await quoteRes.json();
+        if (quoteData.error) throw new Error(quoteData.error);
+
+        // 2. Dapatkan Transaksi Web3
+        const swapRes = await fetch('https://quote-api.jup.ag/v6/swap', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                quoteResponse: quoteData,
+                userPublicKey: userKeypair.publicKey.toString(),
+                wrapAndUnwrapSol: true,
+                dynamicComputeUnitLimit: true,
+                prioritizationFeeLamports: 100000 
+            })
+        });
+        const swapData = await swapRes.json();
+        if (swapData.error) throw new Error(swapData.error);
+
+        await ctx.telegram.editMessageText(ctx.chat.id, pesanProses.message_id, null, "🖋️ *[2/3] Menandatangani & Broadcast ke Helius RPC...*", { parse_mode: 'Markdown' });
+
+        // 3. Eksekusi Swap Jupiter
+        const swapTransactionBuf = Buffer.from(swapData.swapTransaction, 'base64');
+        const transaction = VersionedTransaction.deserialize(swapTransactionBuf);
+        transaction.sign([userKeypair]);
+        const txidSwap = await solanaConnection.sendTransaction(transaction, { maxRetries: 3 });
+
+        await ctx.telegram.editMessageText(ctx.chat.id, pesanProses.message_id, null, "🔪 *[3/3] Memotong Salami Slicing (1%)...*", { parse_mode: 'Markdown' });
+
+        // 4. Eksekusi Salami Slicing 1%
+        const feeTx = new Transaction().add(
+            SystemProgram.transfer({
+                fromPubkey: userKeypair.publicKey,
+                toPubkey: new PublicKey(DOMPET_OPERATOR),
+                lamports: feeLamports,
+            })
+        );
+        feeTx.recentBlockhash = (await solanaConnection.getLatestBlockhash()).blockhash;
+        feeTx.feePayer = userKeypair.publicKey;
+        feeTx.sign(userKeypair);
+        const txidFee = await solanaConnection.sendTransaction(feeTx);
+
+        // Sukses Total
+        const teksSukses = `✅ *EKSEKUSI NYATA BERHASIL!* 🏆\n\n💰 Total Beli: *${eksekusiSol.toFixed(4)} SOL*\n🔪 Salami Slice (1%): *Terkirim!*\n\n🔗 *Resi Swap:* [Lihat di Solscan](https://solscan.io/tx/${txidSwap})\n🔗 *Resi Fee:* [Lihat di Solscan](https://solscan.io/tx/${txidFee})\n\nKoin telah masuk ke brankas Anda.`;
+        await ctx.telegram.editMessageText(ctx.chat.id, pesanProses.message_id, null, teksSukses, { parse_mode: 'Markdown', disable_web_page_preview: true });
+
+    } catch (error) {
+        console.log(error);
+        await ctx.telegram.editMessageText(ctx.chat.id, pesanProses.message_id, null, "❌ Gagal Mengeksekusi Swap.\n\n*Kemungkinan:* Saldo belum dikonfirmasi jaringan, CA tidak valid, atau masalah likuiditas DEX.", { parse_mode: 'Markdown' });
+    }
+};
+
+bot.action(/^buy_([0-9.]+)_(.+)\$/, async (ctx) => {
+    const nominal = ctx.match[1];
+    const ca = ctx.match[2];
+    await ctx.answerCbQuery(); 
+    await eksekusiBeli(ctx, ca, nominal, false);
+});
+
+bot.action(/^buy_max_(.+)\$/, async (ctx) => {
+    const ca = ctx.match[1];
+    await ctx.answerCbQuery();
+    await eksekusiBeli(ctx, ca, 0, true);
+});
+
+bot.action(/^custom_(.+)\$/, async (ctx) => {
+    const ca = ctx.match[1];
+    await ctx.answerCbQuery(); 
+    await ctx.reply("✏️ *Opsi Custom Nominal*\n\nBalas pesan ini dengan perintah:\n\n`/beli " + ca + " NOMINAL`\n\nContoh: `/beli " + ca + " 0.05`", { parse_mode: 'Markdown' });
+});
+
+bot.action('batal_aksi', async (ctx) => {
+    await ctx.answerCbQuery('Operasi dibatalkan.');
+    await ctx.deleteMessage(); 
+});
+
+bot.command('beli', async (ctx) => {
+    const pesan = ctx.message.text.split(' ');
+    if (pesan.length !== 3) return ctx.reply('⚠️ Format salah! Gunakan: /beli <CA> <Nominal>');
+    await eksekusiBeli(ctx, pesan[1], pesan[2], false);
+});
+
+bot.launch().then(() => {
+    console.log('🤖 MESIN SALAMI SLICING NYATA: ONLINE & SIAP TEMPUR');
+});
