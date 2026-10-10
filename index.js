@@ -19,25 +19,39 @@ const simpanDatabase = (data) => {
     fs.writeFileSync(DB_FILE, JSON.stringify(data, null, 2));
 };
 
-// --- FITUR BARU 1: RADAR DEPOSIT OTOMATIS (WEBSOCKET) ---
+// --- FITUR BARU 3: PENARIK HARGA SOL/USDT REAL-TIME (BINANCE) ---
+const getSolPriceUSD = async () => {
+    try {
+        const res = await fetch('https://api.binance.com/api/v3/ticker/price?symbol=SOLUSDT');
+        const data = await res.json();
+        return parseFloat(data.price);
+    } catch (error) {
+        return 0;
+    }
+};
+
+// --- UPDATE RADAR DEPOSIT (DENGAN ESTIMASI USDT) ---
 const pantauDompet = (publicKeyString, userId) => {
     try {
         const pubKey = new PublicKey(publicKeyString);
-        solanaConnection.onAccountChange(pubKey, (accountInfo) => {
+        solanaConnection.onAccountChange(pubKey, async (accountInfo) => {
             const saldoSol = accountInfo.lamports / LAMPORTS_PER_SOL;
-            bot.telegram.sendMessage(userId, "🔔 *DEPOSIT MASUK!*\n\nSaldo dompet Anda sekarang: *" + saldoSol + " SOL*", { parse_mode: 'Markdown' });
+            const solPrice = await getSolPriceUSD();
+            const saldoUsd = (saldoSol * solPrice).toFixed(2);
+            
+            const teksUsd = solPrice > 0 ? "\n💵 Nilai Amunisi: *\$" + saldoUsd + " USDT*" : "";
+            
+            bot.telegram.sendMessage(userId, "🔔 *DEPOSIT MASUK!*\n\nSaldo dompet Anda sekarang: *" + saldoSol + " SOL*" + teksUsd, { parse_mode: 'Markdown' });
         }, 'confirmed');
     } catch (error) {
         console.log("Gagal memantau dompet:", error);
     }
 };
 
-// Nyalakan radar untuk semua user yang ada di database saat bot menyala
 const dbAwal = bacaDatabase();
 for (const userId in dbAwal) {
     pantauDompet(dbAwal[userId].publicKey, userId);
 }
-// ---------------------------------------------------------
 
 bot.start((ctx) => {
     const pesanWelcome = "🏆 *WELCOME TO THE HOLY GRAIL ENGINE* 🏆\n\nMesin eksekusi Solana tercepat di kelasnya. Anda sekarang terhubung ke infrastruktur *private node* tingkat dewa.\n\nIkuti ritual inisiasi berikut untuk mulai berburu:\n\n1️⃣ *BUAT BRANKAS EKSKLUSIF*\nKetik /dompet untuk men-generate dompet enkripsi khusus Anda.\n\n2️⃣ *ISI BAHAN BAKAR (DEPOSIT)*\nKirimkan SOL ke alamat dompet baru Anda untuk modal *sniping*. Ketik /saldo untuk memvalidasi dana yang masuk.\n\n3️⃣ *EKSEKUSI KILAT (SNIPE)*\nTidak perlu *command* ribet. Langsung *Copy-Paste* Contract Address (CA) koin apa pun ke dalam *chat* ini. Holy Grail akan otomatis mendeteksi dan memunculkan panel *1-Click Buy* dalam hitungan milidetik.\n\n4️⃣ *AMANKAN KEUNTUNGAN*\nSudah profit? Ketik `/tarik ALAMAT_DOMPET_ANDA` untuk memindahkan dana ke dompet pribadi Anda.\n\n⚡ *The Grail awaits your command. May your bags pump.*";
@@ -60,22 +74,29 @@ bot.command('dompet', (ctx) => {
     };
     simpanDatabase(db);
     
-    // Nyalakan radar deposit otomatis untuk member baru
     pantauDompet(db[userId].publicKey, userId);
 
     ctx.reply("🏦 *DOMPET BARU DIBUAT*\n\nAlamat Deposit Anda:\n`" + db[userId].publicKey + "`", { parse_mode: 'Markdown' });
 });
 
+// --- UPDATE CEK SALDO (DENGAN ESTIMASI USDT) ---
 bot.command('saldo', async (ctx) => {
     const userId = ctx.from.id;
     const db = bacaDatabase();
     if (!db[userId]) return ctx.reply('❌ Anda belum membuat dompet. Ketik /dompet');
+    
     ctx.reply('🔄 Mengecek saldo ke blockchain...');
     try {
         const pubKey = new PublicKey(db[userId].publicKey);
         const saldoLamports = await solanaConnection.getBalance(pubKey);
         const saldoSol = saldoLamports / LAMPORTS_PER_SOL;
-        ctx.reply("💰 Saldo Anda: *" + saldoSol + " SOL*", { parse_mode: 'Markdown' });
+        
+        // Tarik harga USDT
+        const solPrice = await getSolPriceUSD();
+        const saldoUsd = (saldoSol * solPrice).toFixed(2);
+        const teksUsd = solPrice > 0 ? "\n💵 Nilai: *\$" + saldoUsd + " USDT*" : "";
+
+        ctx.reply("💰 Saldo Anda: *" + saldoSol + " SOL*" + teksUsd, { parse_mode: 'Markdown' });
     } catch (error) {
         ctx.reply('❌ Gagal mengecek saldo.');
     }
@@ -102,21 +123,16 @@ bot.command('tarik', async (ctx) => {
     }
 });
 
-// --- FITUR BARU 2: DEXSCREENER API (NAMA & HARGA TOKEN) ---
 const solanaAddressRegex = /[1-9A-HJ-NP-Za-km-z]{32,44}/;
 
 bot.hears(solanaAddressRegex, async (ctx) => {
     const teksPesan = ctx.message.text;
-    
-    // Filter Cerdas: Abaikan otomatis jika alamat memuat 0x (Ethereum/BSC)
     if (teksPesan.toLowerCase().includes('0x')) return;
     
     const ca = ctx.match[0].trim(); 
-    
     const loadingMsg = await ctx.reply("🔍 Memindai data token di DEX...");
 
     try {
-        // Fetch data harga dan nama koin real-time dari DexScreener
         const respon = await fetch("https://api.dexscreener.com/latest/dex/tokens/" + ca);
         const data = await respon.json();
 
