@@ -61,13 +61,17 @@ for (const userId in dbAwal) { pantauDompet(dbAwal[userId].publicKey, userId); }
 // FITUR BARU: AUTO-DETECT BAHASA DI MENU START
 // =========================================================================
 bot.start((ctx) => {
-    // Panggil fungsi penentu bahasa berdasarkan profil Telegram pengguna
+    // TAMPILKAN APA YANG BOT BACA DARI TELEGRAM ANDA
+    const kodeAsli = ctx.from.language_code;
+    
+    // Panggil fungsi penentu bahasa
     const lang = getUserLang(ctx);
     
-    // Tarik teks dari file locales.js berdasarkan bahasa yang dideteksi
+    // Tarik teks dari file locales.js
     const pesanWelcome = locales[lang].welcome;
     
-    ctx.reply(pesanWelcome, { parse_mode: 'Markdown' });
+    // Kirim pesan balasan PLUS kode bahasa untuk debugging
+    ctx.reply(`[DEBUG LOG: Bahasa terdeteksi = ${kodeAsli} -> Dipetakan ke = ${lang}]\n\n${pesanWelcome}`, { parse_mode: 'Markdown' });
 });
 
 bot.command('dompet', (ctx) => {
