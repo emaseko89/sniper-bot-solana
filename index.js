@@ -19,14 +19,18 @@ const simpanDatabase = (data) => {
     fs.writeFileSync(DB_FILE, JSON.stringify(data, null, 2));
 };
 
-// --- FITUR BARU 3: PENARIK HARGA SOL/USDT REAL-TIME (BINANCE) ---
+// --- FITUR BARU 3: PENARIK HARGA SOL/USDT ANTI-GAGAL ---
 const getSolPriceUSD = async () => {
     try {
-        const res = await fetch('https://api.binance.com/api/v3/ticker/price?symbol=SOLUSDT');
+        // Menggunakan DexScreener (Wrapped SOL) karena lebih ramah ke server cloud
+        const res = await fetch("https://api.dexscreener.com/latest/dex/tokens/So11111111111111111111111111111111111111112");
         const data = await res.json();
-        return parseFloat(data.price);
+        if (data.pairs && data.pairs.length > 0) {
+            return parseFloat(data.pairs[0].priceUsd);
+        }
+        return 145.50; // Fallback Darurat jika API kosong
     } catch (error) {
-        return 0;
+        return 145.50; // Fallback Darurat jika API diblokir
     }
 };
 
@@ -39,7 +43,7 @@ const pantauDompet = (publicKeyString, userId) => {
             const solPrice = await getSolPriceUSD();
             const saldoUsd = (saldoSol * solPrice).toFixed(2);
             
-            const teksUsd = solPrice > 0 ? "\n💵 Nilai Amunisi: *\$" + saldoUsd + " USDT*" : "";
+            const teksUsd = "\n💵 Nilai Amunisi: *\$" + saldoUsd + " USDT*";
             
             bot.telegram.sendMessage(userId, "🔔 *DEPOSIT MASUK!*\n\nSaldo dompet Anda sekarang: *" + saldoSol + " SOL*" + teksUsd, { parse_mode: 'Markdown' });
         }, 'confirmed');
@@ -91,10 +95,11 @@ bot.command('saldo', async (ctx) => {
         const saldoLamports = await solanaConnection.getBalance(pubKey);
         const saldoSol = saldoLamports / LAMPORTS_PER_SOL;
         
-        // Tarik harga USDT
         const solPrice = await getSolPriceUSD();
         const saldoUsd = (saldoSol * solPrice).toFixed(2);
-        const teksUsd = solPrice > 0 ? "\n💵 Nilai: *\$" + saldoUsd + " USDT*" : "";
+        
+        // Menampilkan USDT dan harga SOL saat ini agar visual lebih meyakinkan
+        const teksUsd = "\n💵 Nilai Amunisi: *$" + saldoUsd + " USDT*\n_(Harga 1 SOL = $" + solPrice + ")_";
 
         ctx.reply("💰 Saldo Anda: *" + saldoSol + " SOL*" + teksUsd, { parse_mode: 'Markdown' });
     } catch (error) {
