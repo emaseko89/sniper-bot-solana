@@ -3,6 +3,9 @@ const fs = require('fs');
 const { Telegraf, Markup } = require('telegraf');
 const { Connection, Keypair, PublicKey, LAMPORTS_PER_SOL, VersionedTransaction, Transaction, SystemProgram } = require('@solana/web3.js');
 
+// 1. Panggil Kamus Bahasa
+const locales = require('./locales');
+
 const bot = new Telegraf(process.env.TELEGRAM_TOKEN);
 const solanaConnection = new Connection(process.env.HELIUS_RPC_URL, 'confirmed');
 const DB_FILE = './database.json';
@@ -17,6 +20,17 @@ const bacaDatabase = () => {
 
 const simpanDatabase = (data) => {
     fs.writeFileSync(DB_FILE, JSON.stringify(data, null, 2));
+};
+
+// 2. Fungsi Pendeteksi Bahasa Otomatis
+const getUserLang = (ctx) => {
+    // Tangkap kode bahasa dari HP pengguna (default 'en' jika tidak terbaca)
+    let lang = ctx.from.language_code?.substring(0, 2) || 'en';
+    // Jika bahasanya tidak ada di locales.js kita (misal Prancis 'fr'), paksa ke Inggris ('en')
+    if (!locales[lang]) {
+        lang = 'en'; 
+    }
+    return lang;
 };
 
 const getSolPriceUSD = async () => {
@@ -43,8 +57,16 @@ const pantauDompet = (publicKeyString, userId) => {
 const dbAwal = bacaDatabase();
 for (const userId in dbAwal) { pantauDompet(dbAwal[userId].publicKey, userId); }
 
+// =========================================================================
+// FITUR BARU: AUTO-DETECT BAHASA DI MENU START
+// =========================================================================
 bot.start((ctx) => {
-    const pesanWelcome = "🏆 *WELCOME TO THE HOLY GRAIL ENGINE* 🏆\n\nMesin eksekusi Solana tercepat di kelasnya. Anda sekarang terhubung ke infrastruktur *private node* tingkat dewa.\n\nIkuti ritual inisiasi berikut untuk mulai berburu:\n\n1️⃣ *BUAT BRANKAS EKSKLUSIF*\nKetik /dompet untuk men-generate dompet enkripsi khusus Anda.\n\n2️⃣ *ISI BAHAN BAKAR (DEPOSIT)*\nKirimkan SOL ke alamat dompet baru Anda untuk modal *sniping*. Ketik /saldo untuk memvalidasi dana yang masuk.\n\n3️⃣ *EKSEKUSI KILAT (SNIPE)*\nTidak perlu *command* ribet. Langsung *Copy-Paste* Contract Address (CA) koin apa pun ke dalam *chat* ini.\n\n4️⃣ *RADAR ALPHA*\nKetik /radar untuk melihat koin potensial yang sedang meledak di DEX saat ini.\n\n5️⃣ *AMANKAN KEUNTUNGAN*\nSudah profit? Ketik `/tarik ALAMAT_DOMPET_PHANTOM` untuk memindahkan dana.\n\n6️⃣ *CADANGKAN DOMPET (BARU)*\nKetik /export untuk melihat *Private Key* dan mem-backup dompet Anda ke aplikasi Phantom.\n\n⚡ *The Grail awaits your command. May your bags pump.*";
+    // Panggil fungsi penentu bahasa berdasarkan profil Telegram pengguna
+    const lang = getUserLang(ctx);
+    
+    // Tarik teks dari file locales.js berdasarkan bahasa yang dideteksi
+    const pesanWelcome = locales[lang].welcome;
+    
     ctx.reply(pesanWelcome, { parse_mode: 'Markdown' });
 });
 
@@ -112,9 +134,6 @@ bot.command('radar', async (ctx) => {
     }
 });
 
-// =========================================================================
-// PENARIKAN (WITHDRAWAL) NYATA KE DOMPET PHANTOM USER
-// =========================================================================
 bot.command('tarik', async (ctx) => {
     const userId = ctx.from.id;
     const db = bacaDatabase();
@@ -164,9 +183,6 @@ bot.command('tarik', async (ctx) => {
     }
 });
 
-// =========================================================================
-// FITUR BARU: EXPORT PRIVATE KEY (PEMBANGUN KEPERCAYAAN)
-// =========================================================================
 bot.command('export', (ctx) => {
     const userId = ctx.from.id;
     const db = bacaDatabase();
@@ -177,9 +193,6 @@ bot.command('export', (ctx) => {
     ctx.reply(teksExport, { parse_mode: 'Markdown' });
 });
 
-// =========================================================================
-// PRIORITAS 1: COMMAND /beli (EKSEKUSI JUPITER DEX & SALAMI SLICING)
-// =========================================================================
 const eksekusiBeli = async (ctx, ca, nominalSol, isMax = false) => {
     const userId = ctx.from.id;
     const db = bacaDatabase();
@@ -265,9 +278,6 @@ bot.command('beli', async (ctx) => {
     await eksekusiBeli(ctx, pesan[1], pesan[2], false);
 });
 
-// =========================================================================
-// PRIORITAS 2: RADAR CA (ANTI-RUG SHIELD)
-// =========================================================================
 const solanaAddressRegex = /[1-9A-HJ-NP-Za-km-z]{32,44}/;
 
 bot.hears(solanaAddressRegex, async (ctx, next) => {
@@ -303,9 +313,6 @@ bot.hears(solanaAddressRegex, async (ctx, next) => {
     } catch (error) { await ctx.telegram.editMessageText(ctx.chat.id, loadingMsg.message_id, null, "❌ Gagal terhubung ke jaringan API DexScreener."); }
 });
 
-// =========================================================================
-// PRIORITAS 3: MANUAL PARSER KLIK TOMBOL
-// =========================================================================
 bot.on('callback_query', async (ctx) => {
     const data = ctx.callbackQuery.data;
     if (!data) return;
