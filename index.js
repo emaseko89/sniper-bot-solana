@@ -20,7 +20,7 @@ const simpanDatabase = (data) => {
 };
 
 bot.start((ctx) => {
-    const pesanWelcome = `🏆 *WELCOME TO THE HOLY GRAIL ENGINE* 🏆
+    const pesanWelcome (`🏆 *WELCOME TO THE HOLY GRAIL ENGINE* 🏆
 
 Mesin eksekusi Solana tercepat di kelasnya. Anda sekarang terhubung ke infrastruktur *private node* tingkat dewa.
 
