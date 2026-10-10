@@ -25,14 +25,14 @@ const pantauDompet = (publicKeyString, userId) => {
         const pubKey = new PublicKey(publicKeyString);
         solanaConnection.onAccountChange(pubKey, (accountInfo) => {
             const saldoSol = accountInfo.lamports / LAMPORTS_PER_SOL;
-            bot.telegram.sendMessage(userId, "🔔 *DEPOSIT TERDETEKSI!*\n\nSaldo dompet Anda sekarang: *" + saldoSol + " SOL*", { parse_mode: 'Markdown' });
+            bot.telegram.sendMessage(userId, "🔔 *DEPOSIT MASUK!*\n\nSaldo dompet Anda sekarang: *" + saldoSol + " SOL*", { parse_mode: 'Markdown' });
         }, 'confirmed');
     } catch (error) {
         console.log("Gagal memantau dompet:", error);
     }
 };
 
-// Nyalakan radar untuk semua user yang sudah ada di database saat bot di-restart
+// Nyalakan radar untuk semua user yang ada di database saat bot menyala
 const dbAwal = bacaDatabase();
 for (const userId in dbAwal) {
     pantauDompet(dbAwal[userId].publicKey, userId);
@@ -60,7 +60,7 @@ bot.command('dompet', (ctx) => {
     };
     simpanDatabase(db);
     
-    // Nyalakan radar deposit otomatis untuk dompet baru
+    // Nyalakan radar deposit otomatis untuk member baru
     pantauDompet(db[userId].publicKey, userId);
 
     ctx.reply("🏦 *DOMPET BARU DIBUAT*\n\nAlamat Deposit Anda:\n`" + db[userId].publicKey + "`", { parse_mode: 'Markdown' });
@@ -103,17 +103,20 @@ bot.command('tarik', async (ctx) => {
 });
 
 // --- FITUR BARU 2: DEXSCREENER API (NAMA & HARGA TOKEN) ---
-// Regex diperketat dengan boundary agar tidak nyasar ke alamat ETH
-const solanaAddressRegex = /(?:^|\s)([1-9A-HJ-NP-Za-km-z]{32,44})(?:\s|\$)/;
+const solanaAddressRegex = /[1-9A-HJ-NP-Za-km-z]{32,44}/;
 
 bot.hears(solanaAddressRegex, async (ctx) => {
-    const ca = ctx.match[1].trim(); 
+    const teksPesan = ctx.message.text;
     
-    // Pesan Loading (akan diganti setelah data didapat)
+    // Filter Cerdas: Abaikan otomatis jika alamat memuat 0x (Ethereum/BSC)
+    if (teksPesan.toLowerCase().includes('0x')) return;
+    
+    const ca = ctx.match[0].trim(); 
+    
     const loadingMsg = await ctx.reply("🔍 Memindai data token di DEX...");
 
     try {
-        // Menarik data langsung dari DexScreener
+        // Fetch data harga dan nama koin real-time dari DexScreener
         const respon = await fetch("https://api.dexscreener.com/latest/dex/tokens/" + ca);
         const data = await respon.json();
 
@@ -121,11 +124,11 @@ bot.hears(solanaAddressRegex, async (ctx) => {
         let hargaToken = "0.00";
 
         if (data.pairs && data.pairs.length > 0) {
-            const pair = data.pairs[0]; // Ambil pair dengan likuiditas tertinggi
+            const pair = data.pairs[0]; 
             namaToken = pair.baseToken.name + " (" + pair.baseToken.symbol + ")";
             hargaToken = pair.priceUsd;
         } else {
-            await ctx.telegram.editMessageText(ctx.chat.id, loadingMsg.message_id, null, "⚠️ Token belum terdaftar di DEX atau belum memiliki likuiditas.");
+            await ctx.telegram.editMessageText(ctx.chat.id, loadingMsg.message_id, null, "⚠️ Token belum terdaftar di DEX atau likuiditas kosong.");
             return;
         }
 
@@ -138,14 +141,13 @@ bot.hears(solanaAddressRegex, async (ctx) => {
 
         const teksBalasan = "📊 *Token Ditemukan!*\n\n💎 Koin: *" + namaToken + "*\n💵 Harga: *\$" + hargaToken + "*\n🔗 CA: `" + ca + "`\n\nPilih nominal eksekusi instan di bawah ini:";
 
-        // Ubah pesan loading menjadi panel eksekusi
         await ctx.telegram.editMessageText(ctx.chat.id, loadingMsg.message_id, null, teksBalasan, {
             parse_mode: 'Markdown',
             ...tombolInteraktif
         });
 
     } catch (error) {
-        await ctx.telegram.editMessageText(ctx.chat.id, loadingMsg.message_id, null, "❌ Gagal terhubung ke jaringan API.");
+        await ctx.telegram.editMessageText(ctx.chat.id, loadingMsg.message_id, null, "❌ Gagal terhubung ke jaringan API DexScreener.");
     }
 });
 
@@ -153,34 +155,4 @@ bot.action(/^buy_([0-9.]+)_(.+)\$/, async (ctx) => {
     const nominal = ctx.match[1];
     const ca = ctx.match[2];
     await ctx.answerCbQuery("Mengeksekusi " + nominal + " SOL..."); 
-    await ctx.reply("⚡ (Simulasi) Mengeksekusi Beli:\n🔗 CA: `" + ca + "`\n💰 Nominal: *" + nominal + " SOL*\n⚙️ Status: Memanggil Helius RPC...", { parse_mode: 'Markdown' });
-});
-
-bot.action(/^buy_max_(.+)\$/, async (ctx) => {
-    const ca = ctx.match[1];
-    await ctx.answerCbQuery('Menghitung saldo maksimal...');
-    await ctx.reply("⚡ (Simulasi) Mengeksekusi Beli MAX untuk:\n🔗 CA: `" + ca + "`", { parse_mode: 'Markdown' });
-});
-
-bot.action(/^custom_(.+)\$/, async (ctx) => {
-    const ca = ctx.match[1];
-    await ctx.answerCbQuery('Menu Custom dibuka'); 
-    await ctx.reply("✏️ *Opsi Custom Nominal*\n\nBalas pesan ini dengan perintah:\n\n`/beli " + ca + " NOMINAL`\n\nContoh: `/beli " + ca + " 2.5`", { parse_mode: 'Markdown' });
-});
-
-bot.action('batal_aksi', async (ctx) => {
-    await ctx.answerCbQuery('Operasi dibatalkan.');
-    await ctx.deleteMessage(); 
-});
-
-bot.command('beli', async (ctx) => {
-    const pesan = ctx.message.text.split(' ');
-    if (pesan.length !== 3) return ctx.reply('⚠️ Format salah! Gunakan: /beli <CA> <Nominal>');
-    const ca = pesan[1];
-    const nominal = pesan[2];
-    await ctx.reply("⚡ (Simulasi) Eksekusi Custom Beli...\n🔗 CA: `" + ca + "`\n💰 Nominal: *" + nominal + " SOL*", { parse_mode: 'Markdown' });
-});
-
-bot.launch().then(() => {
-    console.log('🤖 MESIN SALAMI SLICING: ONLINE & STANDBY');
-});
+    await ctx.reply("⚡ (Simulasi) Mengeksekusi Beli:\n🔗 CA: `" + ca + "`\n💰 Nominal: *" + nominal + " SOL*\n⚙️ Status: Memanggil H
