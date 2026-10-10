@@ -20,7 +20,27 @@ const simpanDatabase = (data) => {
 };
 
 bot.start((ctx) => {
-    ctx.reply('🔥 Mesin HolyGrail Engine menyala.\n\nKetik /dompet untuk buat dompet.\nKetik /saldo untuk cek dana.\nKetik /tarik <alamat_tujuan> untuk menarik dana.');
+    const pesanWelcome = `🏆 *WELCOME TO THE HOLY GRAIL ENGINE* 🏆
+
+Mesin eksekusi Solana tercepat di kelasnya. Anda sekarang terhubung ke infrastruktur *private node* tingkat dewa.
+
+Ikuti ritual inisiasi berikut untuk mulai berburu:
+
+1️⃣ *BUAT BRANKAS EKSKLUSIF*
+Ketik /dompet untuk men-generate dompet enkripsi khusus Anda.
+
+2️⃣ *ISI BAHAN BAKAR (DEPOSIT)*
+Kirimkan SOL ke alamat dompet baru Anda untuk modal *sniping*. Ketik /saldo untuk memvalidasi dana yang masuk.
+
+3️⃣ *EKSEKUSI KILAT (SNIPE)*
+Tidak perlu *command* ribet. Langsung *Copy-Paste* Contract Address (CA) koin apa pun ke dalam *chat* ini. Holy Grail akan otomatis mendeteksi dan memunculkan panel *1-Click Buy* dalam hitungan milidetik.
+
+4️⃣ *AMANKAN KEUNTUNGAN*
+Sudah profit? Ketik /tarik <alamat_solana_utama_anda> untuk memindahkan dana ke dompet pribadi Anda.
+
+⚡ *The Grail awaits your command. May your bags pump.*`;
+
+    ctx.reply(pesanWelcome, { parse_mode: 'Markdown' });
 });
 
 bot.command('dompet', (ctx) => {
