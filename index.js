@@ -7,6 +7,7 @@ const bot = new Telegraf(process.env.TELEGRAM_TOKEN);
 const solanaConnection = new Connection(process.env.HELIUS_RPC_URL, 'confirmed');
 const DB_FILE = './database.json';
 
+// === GANTI DENGAN ALAMAT DOMPET ASLI ANDA ===
 const DOMPET_OPERATOR = 'AVEyL6y5fdHs6KMB2W7dTSZTrvXjPddvPFjcsJu4awR'; 
 
 const bacaDatabase = () => {
@@ -116,9 +117,9 @@ bot.command('tarik', async (ctx) => {
 });
 
 // ========================================================
-// REVISI REGEX: Mengunci string dari awal (^) hingga akhir (\$)
+// FITUR BARU 3: TOMBOL INLINE KELAS DEWA & CUSTOM NOMINAL
 // ========================================================
-const solanaAddressRegex = /^[1-9A-HJ-NP-Za-km-z]{32,44}\$/;
+const solanaAddressRegex = /[1-9A-HJ-NP-Za-km-z]{32,44}/;
 
 bot.hears(solanaAddressRegex, async (ctx) => {
     const ca = ctx.match[0].trim(); 
@@ -142,14 +143,14 @@ bot.hears(solanaAddressRegex, async (ctx) => {
         ]
     ]);
 
-    // REVISI SINTAKS: Menghilangkan backslash pada string template \${ca}
     await ctx.reply(`📊 *Token Ditemukan!*\n\nCA: \`\${ca}\`\n\nPilih nominal eksekusi instan di bawah ini:`, {
         parse_mode: 'Markdown',
         ...tombolInteraktif
     });
 });
 
-// REVISI REGEX ACTION: Mengubah \$ menjadi \$ bersih
+// --- LISTENER TOMBOL REVISI (ANTI-GAGAL COPY-PASTE) ---
+
 bot.action(/^buy_([0-9.]+)_(.+)\$/, async (ctx) => {
     const nominal = ctx.match[1];
     const ca = ctx.match[2];
@@ -183,6 +184,7 @@ bot.command('beli', async (ctx) => {
 
     await ctx.reply("⚡ (Simulasi) Eksekusi Custom Beli...\nCA: `" + ca + "`\nNominal: *" + nominal + " SOL*", { parse_mode: 'Markdown' });
 });
+// ========================================================
 
 bot.launch().then(() => {
     console.log('🤖 MESIN SALAMI SLICING: ONLINE & STANDBY');
