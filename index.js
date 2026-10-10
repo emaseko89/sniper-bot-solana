@@ -155,4 +155,34 @@ bot.action(/^buy_([0-9.]+)_(.+)\$/, async (ctx) => {
     const nominal = ctx.match[1];
     const ca = ctx.match[2];
     await ctx.answerCbQuery("Mengeksekusi " + nominal + " SOL..."); 
-    await ctx.reply("⚡ (Simulasi) Mengeksekusi Beli:\n🔗 CA: `" + ca + "`\n💰 Nominal: *" + nominal + " SOL*\n⚙️ Status: Memanggil H
+    await ctx.reply("⚡ (Simulasi) Mengeksekusi Beli:\n🔗 CA: `" + ca + "`\n💰 Nominal: *" + nominal + " SOL*\n⚙️ Status: Memanggil Helius RPC...", { parse_mode: 'Markdown' });
+});
+
+bot.action(/^buy_max_(.+)\$/, async (ctx) => {
+    const ca = ctx.match[1];
+    await ctx.answerCbQuery('Menghitung saldo maksimal...');
+    await ctx.reply("⚡ (Simulasi) Mengeksekusi Beli MAX untuk:\n🔗 CA: `" + ca + "`", { parse_mode: 'Markdown' });
+});
+
+bot.action(/^custom_(.+)\$/, async (ctx) => {
+    const ca = ctx.match[1];
+    await ctx.answerCbQuery('Menu Custom dibuka'); 
+    await ctx.reply("✏️ *Opsi Custom Nominal*\n\nBalas pesan ini dengan perintah:\n\n`/beli " + ca + " NOMINAL`\n\nContoh: `/beli " + ca + " 2.5`", { parse_mode: 'Markdown' });
+});
+
+bot.action('batal_aksi', async (ctx) => {
+    await ctx.answerCbQuery('Operasi dibatalkan.');
+    await ctx.deleteMessage(); 
+});
+
+bot.command('beli', async (ctx) => {
+    const pesan = ctx.message.text.split(' ');
+    if (pesan.length !== 3) return ctx.reply('⚠️ Format salah! Gunakan: /beli <CA> <Nominal>');
+    const ca = pesan[1];
+    const nominal = pesan[2];
+    await ctx.reply("⚡ (Simulasi) Eksekusi Custom Beli...\n🔗 CA: `" + ca + "`\n💰 Nominal: *" + nominal + " SOL*", { parse_mode: 'Markdown' });
+});
+
+bot.launch().then(() => {
+    console.log('🤖 MESIN SALAMI SLICING: ONLINE & STANDBY');
+});
