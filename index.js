@@ -22,11 +22,20 @@ const simpanDatabase = (data) => {
     fs.writeFileSync(DB_FILE, JSON.stringify(data, null, 2));
 };
 
-// 2. Fungsi Pendeteksi Bahasa Otomatis
+// 2. Fungsi Ekstraktor Teks Dinamis (Text Engine)
+const t = (lang, key, params = {}) => {
+    // Ambil string dari kamus (default ke 'en' jika bahasa target tidak punya string)
+    let text = locales[lang][key] || locales['en'][key] || key;
+    // Timpa semua variabel dinamis {variabel}
+    for (const [k, v] of Object.entries(params)) {
+        text = text.replace(new RegExp(`{${k}}`, 'g'), v);
+    }
+    return text;
+};
+
+// 3. Fungsi Pendeteksi Bahasa Otomatis
 const getUserLang = (ctx) => {
-    // Tangkap kode bahasa dari HP pengguna (default 'en' jika tidak terbaca)
     let lang = ctx.from.language_code?.substring(0, 2) || 'en';
-    // Jika bahasanya tidak ada di locales.js kita (misal Prancis 'fr'), paksa ke Inggris ('en')
     if (!locales[lang]) {
         lang = 'en'; 
     }
@@ -49,7 +58,16 @@ const pantauDompet = (publicKeyString, userId) => {
             const saldoSol = accountInfo.lamports / LAMPORTS_PER_SOL;
             const solPrice = await getSolPriceUSD();
             const saldoUsd = (saldoSol * solPrice).toFixed(2);
-            bot.telegram.sendMessage(userId, "🔔 *DEPOSIT MASUK!*\n\nSaldo dompet Anda sekarang: *" + saldoSol + " SOL*\n💵 Nilai Amunisi: *$" + saldoUsd + " USDT*", { parse_mode: 'Markdown' });
+            
+            // Tarik bahasa preferensi user dari database (Default 'en')
+            const db = bacaDatabase();
+            const lang = db[userId]?.lang || 'en';
+            
+            bot.telegram.sendMessage(
+                userId, 
+                t(lang, 'deposit_alert', { sol: saldoSol, usd: saldoUsd }), 
+                { parse_mode: 'Markdown' }
+            );
         }, 'confirmed');
     } catch (error) { console.log("Gagal memantau dompet:", error); }
 };
@@ -57,64 +75,75 @@ const pantauDompet = (publicKeyString, userId) => {
 const dbAwal = bacaDatabase();
 for (const userId in dbAwal) { pantauDompet(dbAwal[userId].publicKey, userId); }
 
-// =========================================================================
-// FITUR BARU: AUTO-DETECT BAHASA DI MENU START
-// =========================================================================
 bot.start((ctx) => {
-    // TAMPILKAN APA YANG BOT BACA DARI TELEGRAM ANDA
-    const kodeAsli = ctx.from.language_code;
-    
-    // Panggil fungsi penentu bahasa
     const lang = getUserLang(ctx);
     
-    // Tarik teks dari file locales.js
-    const pesanWelcome = locales[lang].welcome;
+    // Simpan bahasa preferensi pengguna ke database
+    const userId = ctx.from.id;
+    const db = bacaDatabase();
+    if (!db[userId]) {
+        db[userId] = {}; // Jika belum punya database wallet, set objek kosong sementara
+    }
+    db[userId].lang = lang; // Simpan memori bahasa
+    simpanDatabase(db);
     
-    // Kirim pesan balasan PLUS kode bahasa untuk debugging
-    ctx.reply(`[DEBUG LOG: Bahasa terdeteksi = ${kodeAsli} -> Dipetakan ke = ${lang}]\n\n${pesanWelcome}`, { parse_mode: 'Markdown' });
+    ctx.reply(t(lang, 'welcome'), { parse_mode: 'Markdown' });
 });
 
 bot.command('dompet', (ctx) => {
+    const lang = getUserLang(ctx);
     const userId = ctx.from.id;
     const db = bacaDatabase();
-    if (db[userId]) {
-        return ctx.reply("⚠️ Anda sudah memiliki dompet aktif!\n\nAlamat Deposit:\n`" + db[userId].publicKey + "`", { parse_mode: 'Markdown' });
+    
+    if (db[userId] && db[userId].publicKey) {
+        return ctx.reply(t(lang, 'wallet_exists', { address: db[userId].publicKey }), { parse_mode: 'Markdown' });
     }
+    
     const newWallet = Keypair.generate();
     db[userId] = {
         publicKey: newWallet.publicKey.toString(),
-        privateKey: Array.from(newWallet.secretKey)
+        privateKey: Array.from(newWallet.secretKey),
+        lang: lang
     };
     simpanDatabase(db);
     pantauDompet(db[userId].publicKey, userId);
-    ctx.reply("🏦 *DOMPET BARU DIBUAT*\n\nAlamat Deposit Anda:\n`" + db[userId].publicKey + "`", { parse_mode: 'Markdown' });
+    
+    ctx.reply(t(lang, 'wallet_created', { address: db[userId].publicKey }), { parse_mode: 'Markdown' });
 });
 
 bot.command('saldo', async (ctx) => {
+    const lang = getUserLang(ctx);
     const userId = ctx.from.id;
     const db = bacaDatabase();
-    if (!db[userId]) return ctx.reply('❌ Anda belum membuat dompet. Ketik /dompet');
-    ctx.reply('🔄 Mengecek saldo ke blockchain...');
+    
+    if (!db[userId] || !db[userId].publicKey) return ctx.reply(t(lang, 'no_wallet'));
+    
+    ctx.reply(t(lang, 'check_balance'));
     try {
         const pubKey = new PublicKey(db[userId].publicKey);
         const saldoLamports = await solanaConnection.getBalance(pubKey);
         const saldoSol = saldoLamports / LAMPORTS_PER_SOL;
         const solPrice = await getSolPriceUSD();
         const saldoUsd = (saldoSol * solPrice).toFixed(2);
-        ctx.reply("💰 Saldo Anda: *" + saldoSol + " SOL*\n💵 Nilai Amunisi: *$" + saldoUsd + " USDT*\n_(Harga 1 SOL = $" + solPrice + ")_", { parse_mode: 'Markdown' });
-    } catch (error) { ctx.reply('❌ Gagal mengecek saldo.'); }
+        
+        ctx.reply(t(lang, 'balance_info', { sol: saldoSol, usd: saldoUsd, price: solPrice }), { parse_mode: 'Markdown' });
+    } catch (error) { ctx.reply(t(lang, 'balance_error')); }
 });
 
 bot.command('radar', async (ctx) => {
-    const loadingMsg = await ctx.reply("📡 *Menyapu likuiditas DEX untuk mencari koin potensial...*", { parse_mode: 'Markdown' });
+    const lang = getUserLang(ctx);
+    const loadingMsg = await ctx.reply(t(lang, 'radar_scanning'), { parse_mode: 'Markdown' });
+    
     try {
         const targetCAs = "EKpQGSJtjMFqKZ9KQanUKXpe6ZNcA6hMWEcXndn5sdls,7GCihgDB8fe6KNjn2VNbBndApVDdpW2Ci9gVrNyMEngz,DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263";
         const respon = await fetch("https://api.dexscreener.com/latest/dex/tokens/" + targetCAs);
         const data = await respon.json();
-        let teksRadar = "🔥 *HOLY GRAIL ALPHA RADAR* 🔥\n_Token Solana dengan volume ledakan tertinggi saat ini:_\n\n";
+        
+        let teksRadar = t(lang, 'radar_header');
         const tombolRadar = [];
         let count = 0;
         const tokenTercatat = new Set(); 
+        
         if (data.pairs && data.pairs.length > 0) {
             data.pairs.sort((a, b) => (b.volume?.h24 || 0) - (a.volume?.h24 || 0));
             for (let i = 0; i < data.pairs.length; i++) {
@@ -122,32 +151,39 @@ bot.command('radar', async (ctx) => {
                 if (pair.chainId === 'solana' && !tokenTercatat.has(pair.baseToken.address)) {
                     tokenTercatat.add(pair.baseToken.address);
                     count++;
-                    teksRadar += "*" + count + ". " + pair.baseToken.name + " (" + pair.baseToken.symbol + ")*\n";
-                    teksRadar += "💵 Harga: *$" + parseFloat(pair.priceUsd).toFixed(4) + "*\n";
-                    teksRadar += "📈 Vol 24h: *$" + (pair.volume.h24 / 1000000).toFixed(2) + "M*\n";
-                    teksRadar += "🔗 CA: `" + pair.baseToken.address + "`\n\n";
-                    tombolRadar.push([Markup.button.callback("🟢 Snipe " + pair.baseToken.symbol + " (0.1 SOL)", "buy_0.1_" + pair.baseToken.address)]);
+                    teksRadar += t(lang, 'radar_item', {
+                        count: count,
+                        name: pair.baseToken.name,
+                        symbol: pair.baseToken.symbol,
+                        price: parseFloat(pair.priceUsd).toFixed(4),
+                        vol: (pair.volume.h24 / 1000000).toFixed(2),
+                        ca: pair.baseToken.address
+                    });
+                    
+                    tombolRadar.push([Markup.button.callback(t(lang, 'radar_btn_snipe', { symbol: pair.baseToken.symbol }), "buy_0.1_" + pair.baseToken.address)]);
                     if (count >= 3) break; 
                 }
             }
         }
-        tombolRadar.push([Markup.button.callback('❌ Tutup Radar', 'batal_aksi')]);
+        tombolRadar.push([Markup.button.callback(t(lang, 'radar_btn_close'), 'batal_aksi')]);
         await ctx.telegram.editMessageText(ctx.chat.id, loadingMsg.message_id, null, teksRadar, { parse_mode: 'Markdown', ...Markup.inlineKeyboard(tombolRadar) });
     } catch (error) {
-        await ctx.telegram.editMessageText(ctx.chat.id, loadingMsg.message_id, null, "❌ Gagal memindai jaringan DEX. Silakan coba lagi nanti.");
+        await ctx.telegram.editMessageText(ctx.chat.id, loadingMsg.message_id, null, t(lang, 'radar_error'));
     }
 });
 
 bot.command('tarik', async (ctx) => {
+    const lang = getUserLang(ctx);
     const userId = ctx.from.id;
     const db = bacaDatabase();
-    if (!db[userId]) return ctx.reply('❌ Anda belum punya dompet. Ketik /dompet');
+    
+    if (!db[userId] || !db[userId].publicKey) return ctx.reply(t(lang, 'no_wallet'));
 
     const pesan = ctx.message.text.split(' ');
-    if (pesan.length !== 2) return ctx.reply('⚠️ Gunakan format:\n`/tarik <ALAMAT_DOMPET_PHANTOM_ANDA>`', { parse_mode: 'Markdown' });
+    if (pesan.length !== 2) return ctx.reply(t(lang, 'withdraw_format'), { parse_mode: 'Markdown' });
 
     const alamatTujuan = pesan[1];
-    const pesanProses = await ctx.reply('⚙️ Memproses penarikan ke jaringan Solana...', { parse_mode: 'Markdown' });
+    const pesanProses = await ctx.reply(t(lang, 'withdraw_process'), { parse_mode: 'Markdown' });
 
     try {
         const pubKeyTujuan = new PublicKey(alamatTujuan);
@@ -158,7 +194,7 @@ bot.command('tarik', async (ctx) => {
         const biayaTransfer = 5000; 
         
         if (saldoLamports <= biayaTransfer) {
-            return ctx.telegram.editMessageText(ctx.chat.id, pesanProses.message_id, null, '❌ Saldo Anda kosong atau tidak cukup untuk membayar biaya jaringan penarikan.', { parse_mode: 'Markdown' });
+            return ctx.telegram.editMessageText(ctx.chat.id, pesanProses.message_id, null, t(lang, 'withdraw_insufficient'), { parse_mode: 'Markdown' });
         }
 
         const lamportsKirim = saldoLamports - biayaTransfer;
@@ -178,31 +214,32 @@ bot.command('tarik', async (ctx) => {
         const txid = await solanaConnection.sendTransaction(tarikTx);
         const saldoTerkirim = (lamportsKirim / LAMPORTS_PER_SOL).toFixed(4);
         
-        const teksSukses = `✅ *PENARIKAN BERHASIL!*\n\nBerhasil mengirim *\${saldoTerkirim} SOL* ke:\n\`${alamatTujuan}\`\n\n🔗 *Resi Transaksi:*\n[Lihat di Solscan](https://solscan.io/tx/${txid})`;
+        const teksSukses = t(lang, 'withdraw_success', { amount: saldoTerkirim, address: alamatTujuan, txid: txid });
         await ctx.telegram.editMessageText(ctx.chat.id, pesanProses.message_id, null, teksSukses, { parse_mode: 'Markdown', disable_web_page_preview: true });
 
     } catch (error) {
-        console.log("Error Tarik:", error);
-        await ctx.telegram.editMessageText(ctx.chat.id, pesanProses.message_id, null, '❌ *Penarikan Gagal!*\nPastikan alamat tujuan valid dan jaringan Solana tidak sedang sibuk.', { parse_mode: 'Markdown' });
+        await ctx.telegram.editMessageText(ctx.chat.id, pesanProses.message_id, null, t(lang, 'withdraw_fail'), { parse_mode: 'Markdown' });
     }
 });
 
 bot.command('export', (ctx) => {
+    const lang = getUserLang(ctx);
     const userId = ctx.from.id;
     const db = bacaDatabase();
-    if (!db[userId]) return ctx.reply('❌ Anda belum punya dompet. Ketik /dompet');
     
-    const teksExport = `⚠️ *PERINGATAN KEAMANAN TINGKAT TINGGI!* ⚠️\n\nIni adalah *Private Key* dompet Anda. Siapa pun yang memiliki kode ini bisa menguras seluruh isi dompet Anda. JANGAN PERNAH berikan ke siapa pun, termasuk admin!\n\n\`[${db[userId].privateKey.join(',')}]\`\n\n_Catatan: Anda bisa menyalin deretan angka di atas (beserta tanda kurung sikunya) dan mem-paste-nya langsung ke menu 'Import Wallet' di aplikasi Phantom Anda untuk mencadangkan dompet ini._`;
+    if (!db[userId] || !db[userId].publicKey) return ctx.reply(t(lang, 'no_wallet'));
     
-    ctx.reply(teksExport, { parse_mode: 'Markdown' });
+    ctx.reply(t(lang, 'export_warn', { pkey: db[userId].privateKey.join(',') }), { parse_mode: 'Markdown' });
 });
 
 const eksekusiBeli = async (ctx, ca, nominalSol, isMax = false) => {
+    const lang = getUserLang(ctx);
     const userId = ctx.from.id;
     const db = bacaDatabase();
-    if (!db[userId]) return ctx.reply('❌ Buat dompet dulu dengan /dompet');
+    
+    if (!db[userId] || !db[userId].publicKey) return ctx.reply(t(lang, 'no_wallet'));
 
-    const pesanProses = await ctx.reply("⚙️ Memvalidasi dompet dan antrean jaringan...", { parse_mode: 'Markdown' });
+    const pesanProses = await ctx.reply(t(lang, 'buy_process_1'), { parse_mode: 'Markdown' });
 
     try {
         const secretKey = Uint8Array.from(db[userId].privateKey);
@@ -216,16 +253,16 @@ const eksekusiBeli = async (ctx, ca, nominalSol, isMax = false) => {
         const totalDibutuhkan = eksekusiSol + estimasiGas;
 
         if (eksekusiSol <= 0 || saldoSol < totalDibutuhkan) {
-            return ctx.telegram.editMessageText(ctx.chat.id, pesanProses.message_id, null, `❌ *SALDO TIDAK MENCUKUPI*\n\nSaldo Anda: *${saldoSol.toFixed(4)} SOL*\nDibutuhkan (Termasuk Gas & ATA Rent): *${totalDibutuhkan.toFixed(4)} SOL*\n\nSilakan deposit terlebih dahulu.`, { parse_mode: 'Markdown' });
+            return ctx.telegram.editMessageText(ctx.chat.id, pesanProses.message_id, null, t(lang, 'buy_insufficient', { balance: saldoSol.toFixed(4), needed: totalDibutuhkan.toFixed(4) }), { parse_mode: 'Markdown' });
         }
 
-        await ctx.telegram.editMessageText(ctx.chat.id, pesanProses.message_id, null, "✅ *TERKONFIRMASI*\nSaldo memadai. Memulai eksekusi Web3...", { parse_mode: 'Markdown' });
+        await ctx.telegram.editMessageText(ctx.chat.id, pesanProses.message_id, null, t(lang, 'buy_confirmed'), { parse_mode: 'Markdown' });
 
         const totalLamportsBuy = Math.floor(eksekusiSol * LAMPORTS_PER_SOL);
         const feeLamports = Math.floor(totalLamportsBuy * 0.01);
         const swapLamports = totalLamportsBuy - feeLamports;
 
-        await ctx.reply("🚀 *[1/3] Mendapatkan Rute Swap Jupiter DEX...*", { parse_mode: 'Markdown' });
+        await ctx.reply(t(lang, 'buy_step_1'), { parse_mode: 'Markdown' });
 
         const jupQuoteUrl = "https://quote-api.jup.ag/v6/quote?inputMint=So11111111111111111111111111111111111111112&outputMint=" + ca + "&amount=" + swapLamports + "&slippageBps=1500"; 
         const quoteRes = await fetch(jupQuoteUrl);
@@ -246,14 +283,14 @@ const eksekusiBeli = async (ctx, ca, nominalSol, isMax = false) => {
         const swapData = await swapRes.json();
         if (swapData.error) throw new Error(swapData.error);
 
-        await ctx.reply("🖋️ *[2/3] Menandatangani & Broadcast ke Helius RPC...*", { parse_mode: 'Markdown' });
+        await ctx.reply(t(lang, 'buy_step_2'), { parse_mode: 'Markdown' });
 
         const swapTransactionBuf = Buffer.from(swapData.swapTransaction, 'base64');
         const transaction = VersionedTransaction.deserialize(swapTransactionBuf);
         transaction.sign([userKeypair]);
         const txidSwap = await solanaConnection.sendTransaction(transaction, { maxRetries: 3 });
 
-        await ctx.reply("🔪 *[3/3] Memotong Salami Slicing (1%)...*", { parse_mode: 'Markdown' });
+        await ctx.reply(t(lang, 'buy_step_3'), { parse_mode: 'Markdown' });
 
         const feeTx = new Transaction().add(
             SystemProgram.transfer({
@@ -267,63 +304,67 @@ const eksekusiBeli = async (ctx, ca, nominalSol, isMax = false) => {
         feeTx.sign(userKeypair);
         const txidFee = await solanaConnection.sendTransaction(feeTx);
 
-        const teksSukses = `✅ *EKSEKUSI NYATA BERHASIL!* 🏆\n\n💰 Total Beli: *\${eksekusiSol.toFixed(4)} SOL*\n🔪 Salami Slice (1%): *Terkirim!*\n\n🔗 *Resi Swap:* [Lihat di Solscan](https://solscan.io/tx/${txidSwap})\n🔗 *Resi Fee:* [Lihat di Solscan](https://solscan.io/tx/${txidFee})\n\nKoin telah masuk ke brankas Anda.`;
+        const teksSukses = t(lang, 'buy_success', { amount: eksekusiSol.toFixed(4), txswap: txidSwap, txfee: txidFee });
         await ctx.reply(teksSukses, { parse_mode: 'Markdown', disable_web_page_preview: true });
 
     } catch (error) {
-        console.log(error);
-        await ctx.reply("❌ *Gagal Mengeksekusi Swap.*\n\nKemungkinan: Saldo belum dikonfirmasi jaringan, CA tidak valid, atau masalah likuiditas DEX.", { parse_mode: 'Markdown' });
+        await ctx.reply(t(lang, 'buy_fail'), { parse_mode: 'Markdown' });
     }
 };
 
 bot.command('beli', async (ctx) => {
+    const lang = getUserLang(ctx);
     const pesan = ctx.message.text.split(' ');
-    if (pesan.length !== 3) return ctx.reply('⚠️ Format salah! Gunakan: /beli <CA> <Nominal>');
+    if (pesan.length !== 3) return ctx.reply(t(lang, 'buy_format'));
     await eksekusiBeli(ctx, pesan[1], pesan[2], false);
 });
 
 const solanaAddressRegex = /[1-9A-HJ-NP-Za-km-z]{32,44}/;
 
 bot.hears(solanaAddressRegex, async (ctx, next) => {
+    const lang = getUserLang(ctx);
     const teksPesan = ctx.message.text;
     if (teksPesan.startsWith('/')) return next();
     if (teksPesan.toLowerCase().includes('0x')) return;
     
     const ca = ctx.match[0].trim(); 
-    const loadingMsg = await ctx.reply("🔍 Memindai keamanan kontrak Web3 & likuiditas DEX...");
+    const loadingMsg = await ctx.reply(t(lang, 'scan_start'));
     
     try {
         const respon = await fetch("https://api.dexscreener.com/latest/dex/tokens/" + ca);
         const data = await respon.json();
-        let namaToken = "Token Tidak Dikenal", hargaToken = "0.00", mcap = "N/A";
+        let namaToken = t(lang, 'scan_unknown');
+        let hargaToken = "0.00", mcap = "N/A";
+        
         if (data.pairs && data.pairs.length > 0) {
             namaToken = data.pairs[0].baseToken.name + " (" + data.pairs[0].baseToken.symbol + ")";
             hargaToken = data.pairs[0].priceUsd;
-            if (data.pairs[0].fdv) mcap = "$" + (data.pairs[0].fdv / 1000).toFixed(1) + "K";
+            if (data.pairs[0].fdv) mcap = "\$" + (data.pairs[0].fdv / 1000).toFixed(1) + "K";
         } else {
-            return await ctx.telegram.editMessageText(ctx.chat.id, loadingMsg.message_id, null, "⚠️ Token belum terdaftar di DEX atau likuiditas ditarik (Potensi Rug).");
+            return await ctx.telegram.editMessageText(ctx.chat.id, loadingMsg.message_id, null, t(lang, 'scan_rug'));
         }
         
         const tombolInteraktif = Markup.inlineKeyboard([
-            [Markup.button.callback('🟢 Beli 0.1 SOL', "buy_0.1_" + ca), Markup.button.callback('🟢 Beli 0.5 SOL', "buy_0.5_" + ca)],
-            [Markup.button.callback('🟢 Beli 1 SOL', "buy_1.0_" + ca), Markup.button.callback('🔵 Beli MAX', "buy_max_" + ca)],
-            [Markup.button.callback('✏️ Pilih Sendiri', "custom_" + ca)],
-            [Markup.button.callback('❌ Batal', 'batal_aksi')]
+            [Markup.button.callback(t(lang, 'btn_buy_01'), "buy_0.1_" + ca), Markup.button.callback(t(lang, 'btn_buy_05'), "buy_0.5_" + ca)],
+            [Markup.button.callback(t(lang, 'btn_buy_1'), "buy_1.0_" + ca), Markup.button.callback(t(lang, 'btn_buy_max'), "buy_max_" + ca)],
+            [Markup.button.callback(t(lang, 'btn_custom'), "custom_" + ca)],
+            [Markup.button.callback(t(lang, 'btn_cancel'), 'batal_aksi')]
         ]);
 
-        const teksBalasan = `📊 *TOKEN DITEMUKAN!* 📊\n\n💎 Koin: *${namaToken}*\n💵 Harga: *$\${hargaToken}*\n📊 Market Cap: *\${mcap}*\n🔗 CA: \`${ca}\`\n\n🛡️ *HOLY GRAIL AUDIT:* \n✅ Mint Revoked: *Aman*\n✅ Freeze Authority: *Aman*\n✅ Liquidity: *Terkunci*\n🟢 *Kesimpulan: SAFE TO SNIPE*\n\nPilih nominal eksekusi instan di bawah ini:`;
+        const teksBalasan = t(lang, 'scan_result', { name: namaToken, price: hargaToken, mcap: mcap, ca: ca });
         
         await ctx.telegram.editMessageText(ctx.chat.id, loadingMsg.message_id, null, teksBalasan, { parse_mode: 'Markdown', ...tombolInteraktif });
-    } catch (error) { await ctx.telegram.editMessageText(ctx.chat.id, loadingMsg.message_id, null, "❌ Gagal terhubung ke jaringan API DexScreener."); }
+    } catch (error) { await ctx.telegram.editMessageText(ctx.chat.id, loadingMsg.message_id, null, t(lang, 'scan_error')); }
 });
 
 bot.on('callback_query', async (ctx) => {
+    const lang = getUserLang(ctx);
     const data = ctx.callbackQuery.data;
     if (!data) return;
 
     try {
         if (data === 'batal_aksi') {
-            await ctx.answerCbQuery('Operasi dibatalkan.');
+            await ctx.answerCbQuery(t(lang, 'cb_cancel'));
             return ctx.deleteMessage();
         }
 
@@ -332,7 +373,7 @@ bot.on('callback_query', async (ctx) => {
             if (parts.length === 3) {
                 const nominal = parts[1];
                 const ca = parts[2];
-                await ctx.answerCbQuery("Memproses eksekusi...");
+                await ctx.answerCbQuery(t(lang, 'cb_process'));
                 if (nominal === 'max') {
                     return eksekusiBeli(ctx, ca, 0, true);
                 } else {
@@ -343,8 +384,8 @@ bot.on('callback_query', async (ctx) => {
 
         if (data.startsWith('custom_')) {
             const ca = data.replace('custom_', '');
-            await ctx.answerCbQuery('Menu Custom dibuka'); 
-            return ctx.reply(`✏️ *Opsi Custom Nominal*\n\nTulis berapa SOL saldo yang akan anda gunakan untuk membeli.\n\nBalas dengan format:\n\`/beli ${ca} NOMINAL\`\n\nContoh: \`/beli ${ca} 0.05\``, { parse_mode: 'Markdown' });
+            await ctx.answerCbQuery(t(lang, 'cb_custom_opened')); 
+            return ctx.reply(t(lang, 'cb_custom_msg', { ca: ca }), { parse_mode: 'Markdown' });
         }
     } catch (error) {
         console.log("Error Callback:", error);
@@ -352,5 +393,5 @@ bot.on('callback_query', async (ctx) => {
 });
 
 bot.launch().then(() => {
-    console.log('🤖 MESIN SALAMI SLICING NYATA: ONLINE & SIAP TEMPUR');
+    console.log('🤖 MESIN SALAMI SLICING GLOBAL: ONLINE & SIAP TEMPUR');
 });
