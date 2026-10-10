@@ -1,5 +1,7 @@
 require('dotenv').config();
 const fs = require('fs');
+const fsPromises = require('fs').promises;
+const crypto = require('crypto');
 const { Telegraf, Markup } = require('telegraf');
 const { Connection, Keypair, PublicKey, LAMPORTS_PER_SOL, VersionedTransaction, Transaction, SystemProgram } = require('@solana/web3.js');
 
@@ -13,20 +15,64 @@ const DB_FILE = './database.json';
 // === GANTI DENGAN ALAMAT DOMPET ASLI ANDA ===
 const DOMPET_OPERATOR = 'AVEyL6y5fdHs6KMB2W7dTSZTrvXjPddvPFjcsJu4awR'; 
 
-const bacaDatabase = () => {
-    if (!fs.existsSync(DB_FILE)) return {};
-    return JSON.parse(fs.readFileSync(DB_FILE));
+// === SISTEM KEAMANAN ENKRIPSI (AES-256-CBC) ===
+const ENCRYPTION_KEY = process.env.ENCRYPTION_KEY;
+if (!ENCRYPTION_KEY || Buffer.from(ENCRYPTION_KEY, 'hex').length !== 32) {
+    console.error("🚨 FATAL ERROR: ENCRYPTION_KEY di .env tidak valid! Harus 64 karakter hex (32 bytes).");
+    process.exit(1);
+}
+const IV_LENGTH = 16;
+
+const encrypt = (text) => {
+    let iv = crypto.randomBytes(IV_LENGTH);
+    let cipher = crypto.createCipheriv('aes-256-cbc', Buffer.from(ENCRYPTION_KEY, 'hex'), iv);
+    let encrypted = cipher.update(text);
+    encrypted = Buffer.concat([encrypted, cipher.final()]);
+    return iv.toString('hex') + ':' + encrypted.toString('hex');
 };
 
-const simpanDatabase = (data) => {
-    fs.writeFileSync(DB_FILE, JSON.stringify(data, null, 2));
+const decrypt = (text) => {
+    let textParts = text.split(':');
+    let iv = Buffer.from(textParts.shift(), 'hex');
+    let encryptedText = Buffer.from(textParts.join(':'), 'hex');
+    let decipher = crypto.createDecipheriv('aes-256-cbc', Buffer.from(ENCRYPTION_KEY, 'hex'), iv);
+    let decrypted = decipher.update(encryptedText);
+    decrypted = Buffer.concat([decrypted, decipher.final()]);
+    return decrypted.toString();
+};
+
+// === SISTEM DATABASE ASINKRON DENGAN MUTEX LOCK (ANTI-RACE CONDITION) ===
+let dbLock = false;
+
+const bacaDatabase = async () => {
+    try {
+        if (!fs.existsSync(DB_FILE)) return {};
+        const data = await fsPromises.readFile(DB_FILE, 'utf8');
+        return JSON.parse(data);
+    } catch (error) {
+        console.error("Error membaca database:", error);
+        return {};
+    }
+};
+
+const simpanDatabase = async (data) => {
+    // Tunggu jika database sedang ditulis oleh proses lain (Mencegah file korup)
+    while (dbLock) {
+        await new Promise(resolve => setTimeout(resolve, 10));
+    }
+    dbLock = true;
+    try {
+        await fsPromises.writeFile(DB_FILE, JSON.stringify(data, null, 2), 'utf8');
+    } catch (error) {
+        console.error("Error menyimpan database:", error);
+    } finally {
+        dbLock = false;
+    }
 };
 
 // 2. Fungsi Ekstraktor Teks Dinamis (Text Engine)
 const t = (lang, key, params = {}) => {
-    // Ambil string dari kamus (default ke 'en' jika bahasa target tidak punya string)
-    let text = locales[lang][key] || locales['en'][key] || key;
-    // Timpa semua variabel dinamis {variabel}
+    let text = locales[lang]?.[key] || locales['en']?.[key] || key;
     for (const [k, v] of Object.entries(params)) {
         text = text.replace(new RegExp(`{${k}}`, 'g'), v);
     }
@@ -36,9 +82,7 @@ const t = (lang, key, params = {}) => {
 // 3. Fungsi Pendeteksi Bahasa Otomatis
 const getUserLang = (ctx) => {
     let lang = ctx.from.language_code?.substring(0, 2) || 'en';
-    if (!locales[lang]) {
-        lang = 'en'; 
-    }
+    if (!locales[lang]) lang = 'en'; 
     return lang;
 };
 
@@ -59,8 +103,7 @@ const pantauDompet = (publicKeyString, userId) => {
             const solPrice = await getSolPriceUSD();
             const saldoUsd = (saldoSol * solPrice).toFixed(2);
             
-            // Tarik bahasa preferensi user dari database (Default 'en')
-            const db = bacaDatabase();
+            const db = await bacaDatabase();
             const lang = db[userId]?.lang || 'en';
             
             bot.telegram.sendMessage(
@@ -72,40 +115,46 @@ const pantauDompet = (publicKeyString, userId) => {
     } catch (error) { console.log("Gagal memantau dompet:", error); }
 };
 
-const dbAwal = bacaDatabase();
-for (const userId in dbAwal) { pantauDompet(dbAwal[userId].publicKey, userId); }
-
-bot.start((ctx) => {
-    const lang = getUserLang(ctx);
-    
-    // Simpan bahasa preferensi pengguna ke database
-    const userId = ctx.from.id;
-    const db = bacaDatabase();
-    if (!db[userId]) {
-        db[userId] = {}; // Jika belum punya database wallet, set objek kosong sementara
+// Inisialisasi Pemantauan Dompet saat Bot Restart
+(async () => {
+    const dbAwal = await bacaDatabase();
+    for (const userId in dbAwal) { 
+        if (dbAwal[userId].publicKey) {
+            pantauDompet(dbAwal[userId].publicKey, userId); 
+        }
     }
-    db[userId].lang = lang; // Simpan memori bahasa
-    simpanDatabase(db);
+})();
+
+bot.start(async (ctx) => {
+    const lang = getUserLang(ctx);
+    const userId = ctx.from.id;
+    
+    const db = await bacaDatabase();
+    if (!db[userId]) db[userId] = {}; 
+    db[userId].lang = lang; 
+    await simpanDatabase(db);
     
     ctx.reply(t(lang, 'welcome'), { parse_mode: 'Markdown' });
 });
 
-bot.command('dompet', (ctx) => {
+bot.command('dompet', async (ctx) => {
     const lang = getUserLang(ctx);
     const userId = ctx.from.id;
-    const db = bacaDatabase();
+    const db = await bacaDatabase();
     
     if (db[userId] && db[userId].publicKey) {
         return ctx.reply(t(lang, 'wallet_exists', { address: db[userId].publicKey }), { parse_mode: 'Markdown' });
     }
     
     const newWallet = Keypair.generate();
+    const privateKeyString = JSON.stringify(Array.from(newWallet.secretKey));
+    
     db[userId] = {
         publicKey: newWallet.publicKey.toString(),
-        privateKey: Array.from(newWallet.secretKey),
+        privateKey: encrypt(privateKeyString), // PRIVATE KEY DIENKRIPSI!
         lang: lang
     };
-    simpanDatabase(db);
+    await simpanDatabase(db);
     pantauDompet(db[userId].publicKey, userId);
     
     ctx.reply(t(lang, 'wallet_created', { address: db[userId].publicKey }), { parse_mode: 'Markdown' });
@@ -114,7 +163,7 @@ bot.command('dompet', (ctx) => {
 bot.command('saldo', async (ctx) => {
     const lang = getUserLang(ctx);
     const userId = ctx.from.id;
-    const db = bacaDatabase();
+    const db = await bacaDatabase();
     
     if (!db[userId] || !db[userId].publicKey) return ctx.reply(t(lang, 'no_wallet'));
     
@@ -175,7 +224,7 @@ bot.command('radar', async (ctx) => {
 bot.command('tarik', async (ctx) => {
     const lang = getUserLang(ctx);
     const userId = ctx.from.id;
-    const db = bacaDatabase();
+    const db = await bacaDatabase();
     
     if (!db[userId] || !db[userId].publicKey) return ctx.reply(t(lang, 'no_wallet'));
 
@@ -187,7 +236,11 @@ bot.command('tarik', async (ctx) => {
 
     try {
         const pubKeyTujuan = new PublicKey(alamatTujuan);
-        const secretKey = Uint8Array.from(db[userId].privateKey);
+        
+        // DEKRIPSI PRIVATE KEY
+        const decryptedString = decrypt(db[userId].privateKey);
+        const secretKeyArray = JSON.parse(decryptedString);
+        const secretKey = Uint8Array.from(secretKeyArray);
         const userKeypair = Keypair.fromSecretKey(secretKey);
 
         const saldoLamports = await solanaConnection.getBalance(userKeypair.publicKey);
@@ -218,31 +271,43 @@ bot.command('tarik', async (ctx) => {
         await ctx.telegram.editMessageText(ctx.chat.id, pesanProses.message_id, null, teksSukses, { parse_mode: 'Markdown', disable_web_page_preview: true });
 
     } catch (error) {
+        console.error("Error Tarik:", error);
         await ctx.telegram.editMessageText(ctx.chat.id, pesanProses.message_id, null, t(lang, 'withdraw_fail'), { parse_mode: 'Markdown' });
     }
 });
 
-bot.command('export', (ctx) => {
+bot.command('export', async (ctx) => {
     const lang = getUserLang(ctx);
     const userId = ctx.from.id;
-    const db = bacaDatabase();
+    const db = await bacaDatabase();
     
     if (!db[userId] || !db[userId].publicKey) return ctx.reply(t(lang, 'no_wallet'));
     
-    ctx.reply(t(lang, 'export_warn', { pkey: db[userId].privateKey.join(',') }), { parse_mode: 'Markdown' });
+    try {
+        // DEKRIPSI PRIVATE KEY UNTUK DITAMPILKAN KE USER
+        const decryptedString = decrypt(db[userId].privateKey);
+        const secretKeyArray = JSON.parse(decryptedString);
+        
+        ctx.reply(t(lang, 'export_warn', { pkey: secretKeyArray.join(',') }), { parse_mode: 'Markdown' });
+    } catch (error) {
+        ctx.reply("Terjadi kesalahan saat mengekspor kunci. Pastikan database tidak korup.");
+    }
 });
 
 const eksekusiBeli = async (ctx, ca, nominalSol, isMax = false) => {
     const lang = getUserLang(ctx);
     const userId = ctx.from.id;
-    const db = bacaDatabase();
+    const db = await bacaDatabase();
     
     if (!db[userId] || !db[userId].publicKey) return ctx.reply(t(lang, 'no_wallet'));
 
     const pesanProses = await ctx.reply(t(lang, 'buy_process_1'), { parse_mode: 'Markdown' });
 
     try {
-        const secretKey = Uint8Array.from(db[userId].privateKey);
+        // DEKRIPSI PRIVATE KEY
+        const decryptedString = decrypt(db[userId].privateKey);
+        const secretKeyArray = JSON.parse(decryptedString);
+        const secretKey = Uint8Array.from(secretKeyArray);
         const userKeypair = Keypair.fromSecretKey(secretKey);
         
         const saldoLamports = await solanaConnection.getBalance(userKeypair.publicKey);
@@ -259,7 +324,7 @@ const eksekusiBeli = async (ctx, ca, nominalSol, isMax = false) => {
         await ctx.telegram.editMessageText(ctx.chat.id, pesanProses.message_id, null, t(lang, 'buy_confirmed'), { parse_mode: 'Markdown' });
 
         const totalLamportsBuy = Math.floor(eksekusiSol * LAMPORTS_PER_SOL);
-        const feeLamports = Math.floor(totalLamportsBuy * 0.01);
+        const feeLamports = Math.floor(totalLamportsBuy * 0.01); // 1% Salami Slicing
         const swapLamports = totalLamportsBuy - feeLamports;
 
         await ctx.reply(t(lang, 'buy_step_1'), { parse_mode: 'Markdown' });
@@ -308,6 +373,7 @@ const eksekusiBeli = async (ctx, ca, nominalSol, isMax = false) => {
         await ctx.reply(teksSukses, { parse_mode: 'Markdown', disable_web_page_preview: true });
 
     } catch (error) {
+        console.error("Error Beli:", error);
         await ctx.reply(t(lang, 'buy_fail'), { parse_mode: 'Markdown' });
     }
 };
@@ -393,5 +459,5 @@ bot.on('callback_query', async (ctx) => {
 });
 
 bot.launch().then(() => {
-    console.log('🤖 MESIN SALAMI SLICING GLOBAL: ONLINE & SIAP TEMPUR');
+    console.log('🤖 MESIN SALAMI SLICING GLOBAL: ONLINE & SIAP TEMPUR (ENCRYPTED & ASYNC SECURED)');
 });
