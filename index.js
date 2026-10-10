@@ -36,7 +36,7 @@ Kirimkan SOL ke alamat dompet baru Anda untuk modal *sniping*. Ketik /saldo untu
 Tidak perlu *command* ribet. Langsung *Copy-Paste* Contract Address (CA) koin apa pun ke dalam *chat* ini. Holy Grail akan otomatis mendeteksi dan memunculkan panel *1-Click Buy* dalam hitungan milidetik.
 
 4️⃣ *AMANKAN KEUNTUNGAN*
-Sudah profit? Ketik /tarik <alamat_solana_utama_anda> untuk memindahkan dana ke dompet pribadi Anda.
+Sudah profit? Ketik \`/tarik ALAMAT_DOMPET_ANDA\` untuk memindahkan dana ke dompet pribadi Anda.
 
 ⚡ *The Grail awaits your command. May your bags pump.*`;
 
