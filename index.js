@@ -101,6 +101,21 @@ bot.command('tarik', async (ctx) => {
     }
 });
 
+// ========================================================
+// FITUR BARU 3: PELATUK OTOMATIS CONTRACT ADDRESS (CA) BRUTAL
+// ========================================================
+const solanaAddressRegex = /[1-9A-HJ-NP-Za-km-z]{32,44}/;
+
+bot.hears(solanaAddressRegex, async (ctx) => {
+    const ca = ctx.match[0];
+    
+    await ctx.reply(`🔍 Memindai token: ${ca}...`);
+
+    // Placeholder untuk UI Tombol Beli yang akan Anda bangun
+    await ctx.reply(`📊 Grafik dan tombol Beli untuk CA:\n\`\${ca}\`\n\n[ Beli 0.1 SOL ] | [ Beli 0.5 SOL ] | [ Beli 1 SOL ]`, { parse_mode: 'Markdown' });
+});
+// ========================================================
+
 bot.launch().then(() => {
     console.log('🤖 MESIN SALAMI SLICING: ONLINE & STANDBY');
 });
