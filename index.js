@@ -160,9 +160,6 @@ bot.hears(solanaAddressRegex, async (ctx) => {
     } catch (error) { await ctx.telegram.editMessageText(ctx.chat.id, loadingMsg.message_id, null, "❌ Gagal terhubung ke jaringan API DexScreener."); }
 });
 
-// =========================================================================
-// MESIN EKSEKUSI JUPITER DEX & SALAMI SLICING (DENGAN VALIDASI SALDO)
-// =========================================================================
 const eksekusiBeli = async (ctx, ca, nominalSol, isMax = false) => {
     const userId = ctx.from.id;
     const db = bacaDatabase();
@@ -174,21 +171,17 @@ const eksekusiBeli = async (ctx, ca, nominalSol, isMax = false) => {
         const secretKey = Uint8Array.from(db[userId].privateKey);
         const userKeypair = Keypair.fromSecretKey(secretKey);
         
-        // Cek Saldo Nyata dari Blockchain
         const saldoLamports = await solanaConnection.getBalance(userKeypair.publicKey);
         const saldoSol = saldoLamports / LAMPORTS_PER_SOL;
         
-        // Kalkulasi kebutuhan dana (Nominal beli + Buffer Gas/Rent sebesar 0.005 SOL)
         const estimasiGas = 0.005;
         let eksekusiSol = isMax ? (saldoSol - estimasiGas) : parseFloat(nominalSol);
         const totalDibutuhkan = eksekusiSol + estimasiGas;
 
-        // VALIDASI SALDO SESUAI CATATAN ANDA
         if (eksekusiSol <= 0 || saldoSol < totalDibutuhkan) {
             return ctx.telegram.editMessageText(ctx.chat.id, pesanProses.message_id, null, "❌ *SALDO TIDAK MENCUKUPI*\n\nSaldo Anda: *" + saldoSol.toFixed(4) + " SOL*\nDibutuhkan (Termasuk Gas): *" + totalDibutuhkan.toFixed(4) + " SOL*\n\nSilakan deposit terlebih dahulu.", { parse_mode: 'Markdown' });
         }
 
-        // Jika lolos validasi, kirim TERKONFIRMASI
         await ctx.telegram.editMessageText(ctx.chat.id, pesanProses.message_id, null, "✅ *TERKONFIRMASI*\nSaldo memadai. Memulai eksekusi Web3...", { parse_mode: 'Markdown' });
 
         const totalLamportsBuy = Math.floor(eksekusiSol * LAMPORTS_PER_SOL);
@@ -246,35 +239,47 @@ const eksekusiBeli = async (ctx, ca, nominalSol, isMax = false) => {
     }
 };
 
-bot.action(/^buy_([0-9.]+)_(.+)\$/, async (ctx) => {
-    const nominal = ctx.match[1];
-    const ca = ctx.match[2];
-    await ctx.answerCbQuery(); 
-    await eksekusiBeli(ctx, ca, nominal, false);
-});
-
-bot.action(/^buy_max_(.+)\$/, async (ctx) => {
-    const ca = ctx.match[1];
-    await ctx.answerCbQuery();
-    await eksekusiBeli(ctx, ca, 0, true);
-});
-
-// SESUAI CATATAN: PANDUAN CUSTOM NOMINAL
-bot.action(/^custom_(.+)\$/, async (ctx) => {
-    const ca = ctx.match[1];
-    await ctx.answerCbQuery('Menu Custom dibuka'); 
-    await ctx.reply("✏️ *Opsi Custom Nominal*\n\nTulis berapa SOL saldo yang akan anda gunakan untuk membeli.\n\nBalas dengan format:\n`/beli " + ca + " NOMINAL`\n\nContoh: `/beli " + ca + " 0.05`", { parse_mode: 'Markdown' });
-});
-
-bot.action('batal_aksi', async (ctx) => {
-    await ctx.answerCbQuery('Operasi dibatalkan.');
-    await ctx.deleteMessage(); 
-});
-
 bot.command('beli', async (ctx) => {
     const pesan = ctx.message.text.split(' ');
     if (pesan.length !== 3) return ctx.reply('⚠️ Format salah! Gunakan: /beli <CA> <Nominal>');
     await eksekusiBeli(ctx, pesan[1], pesan[2], false);
+});
+
+// =========================================================================
+// PENGGANTI REGEX: MANUAL PARSER 100% ANTI-GAGAL
+// =========================================================================
+bot.on('callback_query', async (ctx) => {
+    const data = ctx.callbackQuery.data;
+    if (!data) return;
+
+    try {
+        if (data === 'batal_aksi') {
+            await ctx.answerCbQuery('Operasi dibatalkan.');
+            return ctx.deleteMessage();
+        }
+
+        if (data.startsWith('buy_')) {
+            const parts = data.split('_');
+            if (parts.length === 3) {
+                const nominal = parts[1];
+                const ca = parts[2];
+                await ctx.answerCbQuery("Memproses eksekusi...");
+                if (nominal === 'max') {
+                    return eksekusiBeli(ctx, ca, 0, true);
+                } else {
+                    return eksekusiBeli(ctx, ca, nominal, false);
+                }
+            }
+        }
+
+        if (data.startsWith('custom_')) {
+            const ca = data.replace('custom_', '');
+            await ctx.answerCbQuery('Menu Custom dibuka'); 
+            return ctx.reply("✏️ *Opsi Custom Nominal*\n\nTulis berapa SOL saldo yang akan anda gunakan untuk membeli.\n\nBalas dengan format:\n`/beli " + ca + " NOMINAL`\n\nContoh: `/beli " + ca + " 0.05`", { parse_mode: 'Markdown' });
+        }
+    } catch (error) {
+        console.log("Error Callback:", error);
+    }
 });
 
 bot.launch().then(() => {
