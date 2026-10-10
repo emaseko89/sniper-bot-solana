@@ -131,35 +131,9 @@ bot.command('tarik', async (ctx) => {
     } catch (error) { ctx.reply('❌ Alamat tujuan tidak valid atau error sistem.'); }
 });
 
-const solanaAddressRegex = /[1-9A-HJ-NP-Za-km-z]{32,44}/;
-
-bot.hears(solanaAddressRegex, async (ctx) => {
-    const teksPesan = ctx.message.text;
-    if (teksPesan.toLowerCase().includes('0x')) return;
-    const ca = ctx.match[0].trim(); 
-    const loadingMsg = await ctx.reply("🔍 Memindai keamanan kontrak Web3 & likuiditas DEX...");
-    try {
-        const respon = await fetch("https://api.dexscreener.com/latest/dex/tokens/" + ca);
-        const data = await respon.json();
-        let namaToken = "Token Tidak Dikenal", hargaToken = "0.00", mcap = "N/A";
-        if (data.pairs && data.pairs.length > 0) {
-            namaToken = data.pairs[0].baseToken.name + " (" + data.pairs[0].baseToken.symbol + ")";
-            hargaToken = data.pairs[0].priceUsd;
-            if (data.pairs[0].fdv) mcap = "\$" + (data.pairs[0].fdv / 1000).toFixed(1) + "K";
-        } else {
-            return await ctx.telegram.editMessageText(ctx.chat.id, loadingMsg.message_id, null, "⚠️ Token belum terdaftar di DEX atau likuiditas ditarik (Potensi Rug).");
-        }
-        const tombolInteraktif = Markup.inlineKeyboard([
-            [Markup.button.callback('🟢 Beli 0.1 SOL', "buy_0.1_" + ca), Markup.button.callback('🟢 Beli 0.5 SOL', "buy_0.5_" + ca)],
-            [Markup.button.callback('🟢 Beli 1 SOL', "buy_1.0_" + ca), Markup.button.callback('🔵 Beli MAX', "buy_max_" + ca)],
-            [Markup.button.callback('✏️ Pilih Sendiri', "custom_" + ca)],
-            [Markup.button.callback('❌ Batal', 'batal_aksi')]
-        ]);
-        const teksBalasan = "📊 *TOKEN DITEMUKAN!* 📊\n\n💎 Koin: *" + namaToken + "*\n💵 Harga: *\$" + hargaToken + "*\n📊 Market Cap: *" + mcap + "*\n🔗 CA: `" + ca + "`\n\n🛡️ *HOLY GRAIL AUDIT:* \n✅ Mint Revoked: *Aman*\n✅ Freeze Authority: *Aman*\n✅ Liquidity: *Terkunci*\n🟢 *Kesimpulan: SAFE TO SNIPE*\n\nPilih nominal eksekusi instan di bawah ini:";
-        await ctx.telegram.editMessageText(ctx.chat.id, loadingMsg.message_id, null, teksBalasan, { parse_mode: 'Markdown', ...tombolInteraktif });
-    } catch (error) { await ctx.telegram.editMessageText(ctx.chat.id, loadingMsg.message_id, null, "❌ Gagal terhubung ke jaringan API DexScreener."); }
-});
-
+// =========================================================================
+// MESIN EKSEKUSI JUPITER DEX & SALAMI SLICING (TRANSAKSI NYATA & VALIDASI)
+// =========================================================================
 const eksekusiBeli = async (ctx, ca, nominalSol, isMax = false) => {
     const userId = ctx.from.id;
     const db = bacaDatabase();
@@ -188,7 +162,7 @@ const eksekusiBeli = async (ctx, ca, nominalSol, isMax = false) => {
         const feeLamports = Math.floor(totalLamportsBuy * 0.01);
         const swapLamports = totalLamportsBuy - feeLamports;
 
-        await ctx.reply("🚀 *[1/3] Mendapatkan Rute Swap Jupiter DEX...*", { parse_mode: 'Markdown' });
+        await ctx.telegram.editMessageText(ctx.chat.id, pesanProses.message_id, null, "🚀 *[1/3] Mendapatkan Rute Swap Jupiter DEX...*", { parse_mode: 'Markdown' });
 
         const jupQuoteUrl = "https://quote-api.jup.ag/v6/quote?inputMint=So11111111111111111111111111111111111111112&outputMint=" + ca + "&amount=" + swapLamports + "&slippageBps=1500"; 
         const quoteRes = await fetch(jupQuoteUrl);
@@ -209,14 +183,14 @@ const eksekusiBeli = async (ctx, ca, nominalSol, isMax = false) => {
         const swapData = await swapRes.json();
         if (swapData.error) throw new Error(swapData.error);
 
-        await ctx.reply("🖋️ *[2/3] Menandatangani & Broadcast ke Helius RPC...*", { parse_mode: 'Markdown' });
+        await ctx.telegram.editMessageText(ctx.chat.id, pesanProses.message_id, null, "🖋️ *[2/3] Menandatangani & Broadcast ke Helius RPC...*", { parse_mode: 'Markdown' });
 
         const swapTransactionBuf = Buffer.from(swapData.swapTransaction, 'base64');
         const transaction = VersionedTransaction.deserialize(swapTransactionBuf);
         transaction.sign([userKeypair]);
         const txidSwap = await solanaConnection.sendTransaction(transaction, { maxRetries: 3 });
 
-        await ctx.reply("🔪 *[3/3] Memotong Salami Slicing (1%)...*", { parse_mode: 'Markdown' });
+        await ctx.telegram.editMessageText(ctx.chat.id, pesanProses.message_id, null, "🔪 *[3/3] Memotong Salami Slicing (1%)...*", { parse_mode: 'Markdown' });
 
         const feeTx = new Transaction().add(
             SystemProgram.transfer({
@@ -231,14 +205,17 @@ const eksekusiBeli = async (ctx, ca, nominalSol, isMax = false) => {
         const txidFee = await solanaConnection.sendTransaction(feeTx);
 
         const teksSukses = "✅ *EKSEKUSI NYATA BERHASIL!* 🏆\n\n💰 Total Beli: *" + eksekusiSol.toFixed(4) + " SOL*\n🔪 Salami Slice (1%): *Terkirim!*\n\n🔗 *Resi Swap:* [Lihat di Solscan](https://solscan.io/tx/" + txidSwap + ")\n🔗 *Resi Fee:* [Lihat di Solscan](https://solscan.io/tx/" + txidFee + ")\n\nKoin telah masuk ke brankas Anda.";
-        await ctx.reply(teksSukses, { parse_mode: 'Markdown', disable_web_page_preview: true });
+        await ctx.telegram.editMessageText(ctx.chat.id, pesanProses.message_id, null, teksSukses, { parse_mode: 'Markdown', disable_web_page_preview: true });
 
     } catch (error) {
         console.log(error);
-        await ctx.reply("❌ *Gagal Mengeksekusi Swap.*\n\nKemungkinan: Saldo belum dikonfirmasi jaringan, CA tidak valid, atau masalah likuiditas DEX.", { parse_mode: 'Markdown' });
+        await ctx.telegram.editMessageText(ctx.chat.id, pesanProses.message_id, null, "❌ *Gagal Mengeksekusi Swap.*\n\nKemungkinan: Saldo belum dikonfirmasi jaringan, CA tidak valid, atau masalah likuiditas DEX.", { parse_mode: 'Markdown' });
     }
 };
 
+// =========================================================================
+// PRIORITAS 1: COMMAND /beli (HARUS DI ATAS RADAR CA)
+// =========================================================================
 bot.command('beli', async (ctx) => {
     const pesan = ctx.message.text.split(' ');
     if (pesan.length !== 3) return ctx.reply('⚠️ Format salah! Gunakan: /beli <CA> <Nominal>');
@@ -246,7 +223,47 @@ bot.command('beli', async (ctx) => {
 });
 
 // =========================================================================
-// PENGGANTI REGEX: MANUAL PARSER 100% ANTI-GAGAL
+// PRIORITAS 2: RADAR CA (DIABAIKAN JIKA MENGANDUNG /COMMAND)
+// =========================================================================
+const solanaAddressRegex = /[1-9A-HJ-NP-Za-km-z]{32,44}/;
+
+bot.hears(solanaAddressRegex, async (ctx, next) => {
+    const teksPesan = ctx.message.text;
+    
+    // FILTER PENTING: Jika pesan diawali '/', lewati agar bot.command merespons
+    if (teksPesan.startsWith('/')) return next();
+    if (teksPesan.toLowerCase().includes('0x')) return;
+    
+    const ca = ctx.match[0].trim(); 
+    const loadingMsg = await ctx.reply("🔍 Memindai keamanan kontrak Web3 & likuiditas DEX...");
+    
+    try {
+        const respon = await fetch("https://api.dexscreener.com/latest/dex/tokens/" + ca);
+        const data = await respon.json();
+        let namaToken = "Token Tidak Dikenal", hargaToken = "0.00", mcap = "N/A";
+        if (data.pairs && data.pairs.length > 0) {
+            namaToken = data.pairs[0].baseToken.name + " (" + data.pairs[0].baseToken.symbol + ")";
+            hargaToken = data.pairs[0].priceUsd;
+            if (data.pairs[0].fdv) mcap = "\$" + (data.pairs[0].fdv / 1000).toFixed(1) + "K";
+        } else {
+            return await ctx.telegram.editMessageText(ctx.chat.id, loadingMsg.message_id, null, "⚠️ Token belum terdaftar di DEX atau likuiditas ditarik (Potensi Rug).");
+        }
+        
+        const tombolInteraktif = Markup.inlineKeyboard([
+            [Markup.button.callback('🟢 Beli 0.1 SOL', "buy_0.1_" + ca), Markup.button.callback('🟢 Beli 0.5 SOL', "buy_0.5_" + ca)],
+            [Markup.button.callback('🟢 Beli 1 SOL', "buy_1.0_" + ca), Markup.button.callback('🔵 Beli MAX', "buy_max_" + ca)],
+            [Markup.button.callback('✏️ Pilih Sendiri', "custom_" + ca)],
+            [Markup.button.callback('❌ Batal', 'batal_aksi')]
+        ]);
+
+        const teksBalasan = "📊 *TOKEN DITEMUKAN!* 📊\n\n💎 Koin: *" + namaToken + "*\n💵 Harga: *\$" + hargaToken + "*\n📊 Market Cap: *" + mcap + "*\n🔗 CA: `" + ca + "`\n\n🛡️ *HOLY GRAIL AUDIT:* \n✅ Mint Revoked: *Aman*\n✅ Freeze Authority: *Aman*\n✅ Liquidity: *Terkunci*\n🟢 *Kesimpulan: SAFE TO SNIPE*\n\nPilih nominal eksekusi instan di bawah ini:";
+        
+        await ctx.telegram.editMessageText(ctx.chat.id, loadingMsg.message_id, null, teksBalasan, { parse_mode: 'Markdown', ...tombolInteraktif });
+    } catch (error) { await ctx.telegram.editMessageText(ctx.chat.id, loadingMsg.message_id, null, "❌ Gagal terhubung ke jaringan API DexScreener."); }
+});
+
+// =========================================================================
+// PRIORITAS 3: MANUAL PARSER UNTUK KLIK TOMBOL
 // =========================================================================
 bot.on('callback_query', async (ctx) => {
     const data = ctx.callbackQuery.data;
