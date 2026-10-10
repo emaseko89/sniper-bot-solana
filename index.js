@@ -44,7 +44,7 @@ const dbAwal = bacaDatabase();
 for (const userId in dbAwal) { pantauDompet(dbAwal[userId].publicKey, userId); }
 
 bot.start((ctx) => {
-    const pesanWelcome = "🏆 *WELCOME TO THE HOLY GRAIL ENGINE* 🏆\n\nMesin eksekusi Solana tercepat di kelasnya. Anda sekarang terhubung ke infrastruktur *private node* tingkat dewa.\n\nIkuti ritual inisiasi berikut untuk mulai berburu:\n\n1️⃣ *BUAT BRANKAS EKSKLUSIF*\nKetik /dompet untuk men-generate dompet enkripsi khusus Anda.\n\n2️⃣ *ISI BAHAN BAKAR (DEPOSIT)*\nKirimkan SOL ke alamat dompet baru Anda untuk modal *sniping*. Ketik /saldo untuk memvalidasi dana yang masuk.\n\n3️⃣ *EKSEKUSI KILAT (SNIPE)*\nTidak perlu *command* ribet. Langsung *Copy-Paste* Contract Address (CA) koin apa pun ke dalam *chat* ini.\n\n4️⃣ *RADAR ALPHA (NEW)*\nKetik /radar untuk melihat koin potensial yang sedang meledak di DEX saat ini.\n\n5️⃣ *AMANKAN KEUNTUNGAN*\nSudah profit? Ketik `/tarik ALAMAT_DOMPET_ANDA` untuk memindahkan dana.\n\n⚡ *The Grail awaits your command. May your bags pump.*";
+    const pesanWelcome = "🏆 *WELCOME TO THE HOLY GRAIL ENGINE* 🏆\n\nMesin eksekusi Solana tercepat di kelasnya. Anda sekarang terhubung ke infrastruktur *private node* tingkat dewa.\n\nIkuti ritual inisiasi berikut untuk mulai berburu:\n\n1️⃣ *BUAT BRANKAS EKSKLUSIF*\nKetik /dompet untuk men-generate dompet enkripsi khusus Anda.\n\n2️⃣ *ISI BAHAN BAKAR (DEPOSIT)*\nKirimkan SOL ke alamat dompet baru Anda untuk modal *sniping*. Ketik /saldo untuk memvalidasi dana yang masuk.\n\n3️⃣ *EKSEKUSI KILAT (SNIPE)*\nTidak perlu *command* ribet. Langsung *Copy-Paste* Contract Address (CA) koin apa pun ke dalam *chat* ini.\n\n4️⃣ *RADAR ALPHA*\nKetik /radar untuk melihat koin potensial yang sedang meledak di DEX saat ini.\n\n5️⃣ *AMANKAN KEUNTUNGAN*\nSudah profit? Ketik `/tarik ALAMAT_DOMPET_PHANTOM` untuk memindahkan dana.\n\n6️⃣ *CADANGKAN DOMPET (BARU)*\nKetik /export untuk melihat *Private Key* dan mem-backup dompet Anda ke aplikasi Phantom.\n\n⚡ *The Grail awaits your command. May your bags pump.*";
     ctx.reply(pesanWelcome, { parse_mode: 'Markdown' });
 });
 
@@ -132,7 +132,7 @@ bot.command('tarik', async (ctx) => {
         const userKeypair = Keypair.fromSecretKey(secretKey);
 
         const saldoLamports = await solanaConnection.getBalance(userKeypair.publicKey);
-        const biayaTransfer = 5000; // Cukup 5000 lamports untuk transaksi transfer sederhana
+        const biayaTransfer = 5000; 
         
         if (saldoLamports <= biayaTransfer) {
             return ctx.telegram.editMessageText(ctx.chat.id, pesanProses.message_id, null, '❌ Saldo Anda kosong atau tidak cukup untuk membayar biaya jaringan penarikan.', { parse_mode: 'Markdown' });
@@ -165,7 +165,20 @@ bot.command('tarik', async (ctx) => {
 });
 
 // =========================================================================
-// PRIORITAS 1: COMMAND /beli (HARUS DI ATAS RADAR CA)
+// FITUR BARU: EXPORT PRIVATE KEY (PEMBANGUN KEPERCAYAAN)
+// =========================================================================
+bot.command('export', (ctx) => {
+    const userId = ctx.from.id;
+    const db = bacaDatabase();
+    if (!db[userId]) return ctx.reply('❌ Anda belum punya dompet. Ketik /dompet');
+    
+    const teksExport = `⚠️ *PERINGATAN KEAMANAN TINGKAT TINGGI!* ⚠️\n\nIni adalah *Private Key* dompet Anda. Siapa pun yang memiliki kode ini bisa menguras seluruh isi dompet Anda. JANGAN PERNAH berikan ke siapa pun, termasuk admin!\n\n\`[${db[userId].privateKey.join(',')}]\`\n\n_Catatan: Anda bisa menyalin deretan angka di atas (beserta tanda kurung sikunya) dan mem-paste-nya langsung ke menu 'Import Wallet' di aplikasi Phantom Anda untuk mencadangkan dompet ini._`;
+    
+    ctx.reply(teksExport, { parse_mode: 'Markdown' });
+});
+
+// =========================================================================
+// PRIORITAS 1: COMMAND /beli (EKSEKUSI JUPITER DEX & SALAMI SLICING)
 // =========================================================================
 const eksekusiBeli = async (ctx, ca, nominalSol, isMax = false) => {
     const userId = ctx.from.id;
@@ -181,7 +194,6 @@ const eksekusiBeli = async (ctx, ca, nominalSol, isMax = false) => {
         const saldoLamports = await solanaConnection.getBalance(userKeypair.publicKey);
         const saldoSol = saldoLamports / LAMPORTS_PER_SOL;
         
-        // BUFFER DIREVISI: 0.0035 SOL (ATA Rent Exemption + Priority Fee)
         const estimasiGas = 0.0035;
         let eksekusiSol = isMax ? (saldoSol - estimasiGas) : parseFloat(nominalSol);
         const totalDibutuhkan = eksekusiSol + estimasiGas;
@@ -254,7 +266,7 @@ bot.command('beli', async (ctx) => {
 });
 
 // =========================================================================
-// PRIORITAS 2: RADAR CA
+// PRIORITAS 2: RADAR CA (ANTI-RUG SHIELD)
 // =========================================================================
 const solanaAddressRegex = /[1-9A-HJ-NP-Za-km-z]{32,44}/;
 
