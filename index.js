@@ -1,6 +1,6 @@
 require('dotenv').config();
 const fs = require('fs');
-const { Telegraf, Markup } = require('telegraf'); // TAMBAHKAN Markup DI SINI
+const { Telegraf, Markup } = require('telegraf');
 const { Connection, Keypair, PublicKey, LAMPORTS_PER_SOL } = require('@solana/web3.js');
 
 const bot = new Telegraf(process.env.TELEGRAM_TOKEN);
@@ -102,12 +102,11 @@ bot.command('tarik', async (ctx) => {
 const solanaAddressRegex = /[1-9A-HJ-NP-Za-km-z]{32,44}/;
 
 bot.hears(solanaAddressRegex, async (ctx) => {
-    const ca = ctx.match[0];
+    // Tambahan .trim() untuk membuang spasi hantu yang sering bikin tombol error
+    const ca = ctx.match[0].trim(); 
     
-    // Pesan Loading
     await ctx.reply(`🔍 Memindai keamanan token CA: \${ca}...`);
 
-    // Membuat Tombol Interaktif (Inline Keyboard)
     const tombolInteraktif = Markup.inlineKeyboard([
         [
             Markup.button.callback('🟢 Beli 0.1 SOL', `buy_0.1_\${ca}`),
@@ -125,50 +124,41 @@ bot.hears(solanaAddressRegex, async (ctx) => {
         ]
     ]);
 
-    // Mengirim Tombol beserta CA yang bisa diklik untuk di-copy (format Markdown)
     await ctx.reply(`📊 *Token Ditemukan!*\n\nCA: \`${ca}\`\n\nPilih nominal eksekusi instan di bawah ini:`, {
         parse_mode: 'Markdown',
         ...tombolInteraktif
     });
 });
 
-// --- LISTENER UNTUK KLIK TOMBOL (CALLBACK QUERIES) ---
+// --- LISTENER TOMBOL REVISI (RADAR BRUTAL ANTI-GAGAL) ---
 
-// Listener Tombol Beli Nominal Tetap
-bot.action(/buy_([0-9.]+)_([1-9A-HJ-NP-Za-km-z]{32,44})/, async (ctx) => {
+bot.action(/^buy_([0-9.]+)_(.+)$/, async (ctx) => {
     const nominal = ctx.match[1];
     const ca = ctx.match[2];
-    
-    // Wajib untuk mematikan loading icon berputar di tombol Telegram
     await ctx.answerCbQuery(`Mengeksekusi \${nominal} SOL...`); 
-    
-    await ctx.reply(`⚡ (Simulasi) Mengeksekusi Beli untuk CA: \`${ca}\`\n💰 Nominal: *\${nominal} SOL*\n⚙️ Status: Memanggil Helius RPC...`, { parse_mode: 'Markdown' });
+    await ctx.reply(`⚡ (Simulasi) Mengeksekusi Beli untuk CA:\n\`${ca}\`\n💰 Nominal: *\${nominal} SOL*\n⚙️ Status: Memanggil Helius RPC...`, { parse_mode: 'Markdown' });
 });
 
-// Listener Tombol Beli MAX
-bot.action(/buy_max_([1-9A-HJ-NP-Za-km-z]{32,44})/, async (ctx) => {
+bot.action(/^buy_max_(.+)$/, async (ctx) => {
     const ca = ctx.match[1];
     await ctx.answerCbQuery('Menghitung saldo maksimal...');
-    await ctx.reply(`⚡ (Simulasi) Mengeksekusi Beli MAX (Seluruh Saldo Dompet) untuk CA: \`${ca}\``, { parse_mode: 'Markdown' });
+    await ctx.reply(`⚡ (Simulasi) Mengeksekusi Beli MAX (Seluruh Saldo) untuk CA:\n\`${ca}\``, { parse_mode: 'Markdown' });
 });
 
-// Listener Tombol Pilih Sendiri (Custom SOL)
-bot.action(/custom_([1-9A-HJ-NP-Za-km-z]{32,44})/, async (ctx) => {
+bot.action(/^custom_(.+)$/, async (ctx) => {
     const ca = ctx.match[1];
-    await ctx.answerCbQuery(); // Matikan loading
-    await ctx.reply(`✏️ *Opsi Custom Nominal*\n\nBalas pesan ini dengan mengetik perintah berikut:\n\n\`/beli ${ca} NOMINAL_SOL\`\n\nContoh: \`/beli ${ca} 2.5\``, { parse_mode: 'Markdown' });
+    await ctx.answerCbQuery('Menu Custom dibuka'); 
+    await ctx.reply(`✏️ *Opsi Custom Nominal*\n\nBalas pesan ini dengan perintah:\n\n\`/beli ${ca} NOMINAL\`\n\nContoh: \`/beli ${ca} 2.5\``, { parse_mode: 'Markdown' });
 });
 
-// Listener Tombol Batal
 bot.action('batal_aksi', async (ctx) => {
     await ctx.answerCbQuery('Operasi dibatalkan.');
-    await ctx.deleteMessage(); // Menghapus pesan dan tombol dari layar biar rapi
+    await ctx.deleteMessage(); 
 });
 
-// Listener untuk eksekusi perintah /beli (Hasil dari tombol Custom)
 bot.command('beli', async (ctx) => {
     const pesan = ctx.message.text.split(' ');
-    if (pesan.length !== 3) return ctx.reply('⚠️ Format salah! Gunakan: /beli <CA> <Nominal_SOL>');
+    if (pesan.length !== 3) return ctx.reply('⚠️ Format salah! Gunakan: /beli <CA> <Nominal>');
 
     const ca = pesan[1];
     const nominal = pesan[2];
