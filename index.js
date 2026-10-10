@@ -20,7 +20,7 @@ const simpanDatabase = (data) => {
 };
 
 bot.start((ctx) => {
-    const pesanWelcome (`🏆 *WELCOME TO THE HOLY GRAIL ENGINE* 🏆
+    const pesanWelcome = `🏆 *WELCOME TO THE HOLY GRAIL ENGINE* 🏆
 
 Mesin eksekusi Solana tercepat di kelasnya. Anda sekarang terhubung ke infrastruktur *private node* tingkat dewa.
 
@@ -73,7 +73,7 @@ bot.command('saldo', async (ctx) => {
         const pubKey = new PublicKey(db[userId].publicKey);
         const saldoLamports = await solanaConnection.getBalance(pubKey);
         const saldoSol = saldoLamports / LAMPORTS_PER_SOL;
-        ctx.reply(`💰 Saldo Anda: *\${saldoSol} SOL*`, { parse_mode: 'Markdown' });
+        ctx.reply(`💰 Saldo Anda: *${saldoSol} SOL*`, { parse_mode: 'Markdown' });
     } catch (error) {
         ctx.reply('❌ Gagal mengecek saldo.');
     }
@@ -107,9 +107,9 @@ bot.command('tarik', async (ctx) => {
         const potonganOperator = saldoBersih * 0.01; 
         const sisaUntukUser = saldoBersih - potonganOperator; 
 
-        console.log(`[SLICING AKTIF] Dana masuk ke Operator: \${potonganOperator} SOL`);
+        console.log(`[SLICING AKTIF] Dana masuk ke Operator: ${potonganOperator} SOL`);
 
-        ctx.reply(`✅ Penarikan berhasil diproses (Simulasi)!\n\nDikirim ke tujuan: ${sisaUntukUser.toFixed(4)} SOL\nBiaya Sistem (1\%):${potonganOperator.toFixed(4)} SOL`);
+        ctx.reply(`✅ Penarikan berhasil diproses (Simulasi)!\n\nDikirim ke tujuan: ${sisaUntukUser.toFixed(4)} SOL\nBiaya Sistem (1%): ${potonganOperator.toFixed(4)} SOL`);
 
     } catch (error) {
         ctx.reply('❌ Alamat tujuan tidak valid atau error sistem.');
@@ -122,29 +122,28 @@ bot.command('tarik', async (ctx) => {
 const solanaAddressRegex = /[1-9A-HJ-NP-Za-km-z]{32,44}/;
 
 bot.hears(solanaAddressRegex, async (ctx) => {
-    // Tambahan .trim() untuk membuang spasi hantu yang sering bikin tombol error
     const ca = ctx.match[0].trim(); 
     
-    await ctx.reply(`🔍 Memindai keamanan token CA: \${ca}...`);
+    await ctx.reply(`🔍 Memindai keamanan token CA: ${ca}...`);
 
     const tombolInteraktif = Markup.inlineKeyboard([
         [
-            Markup.button.callback('🟢 Beli 0.1 SOL', `buy_0.1_\${ca}`),
-            Markup.button.callback('🟢 Beli 0.5 SOL', `buy_0.5_\${ca}`)
+            Markup.button.callback('🟢 Beli 0.1 SOL', `buy_0.1_${ca}`),
+            Markup.button.callback('🟢 Beli 0.5 SOL', `buy_0.5_${ca}`)
         ],
         [
-            Markup.button.callback('🟢 Beli 1 SOL', `buy_1.0_\${ca}`),
-            Markup.button.callback('🔵 Beli MAX', `buy_max_\${ca}`)
+            Markup.button.callback('🟢 Beli 1 SOL', `buy_1.0_${ca}`),
+            Markup.button.callback('🔵 Beli MAX', `buy_max_${ca}`)
         ],
         [
-            Markup.button.callback('✏️ Pilih Sendiri (Custom SOL)', `custom_\${ca}`)
+            Markup.button.callback('✏️ Pilih Sendiri (Custom SOL)', `custom_${ca}`)
         ],
         [
             Markup.button.callback('❌ Batal', 'batal_aksi')
         ]
     ]);
 
-    await ctx.reply(`📊 *Token Ditemukan!*\n\nCA: \`${ca}\`\n\nPilih nominal eksekusi instan di bawah ini:`, {
+    await ctx.reply(`📊 *Token Ditemukan!*\n\nCA: \`\${ca}\`\n\nPilih nominal eksekusi instan di bawah ini:`, {
         parse_mode: 'Markdown',
         ...tombolInteraktif
     });
