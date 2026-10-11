@@ -94,36 +94,6 @@ const getSolPriceUSD = async () => {
     } catch (error) { return 145.50; }
 };
 
-const pantauDompet = (publicKeyString, userId) => {
-    try {
-        const pubKey = new PublicKey(publicKeyString);
-        solanaConnection.onAccountChange(pubKey, async (accountInfo) => {
-            const saldoSol = accountInfo.lamports / LAMPORTS_PER_SOL;
-            const solPrice = await getSolPriceUSD();
-            const saldoUsd = (saldoSol * solPrice).toFixed(2);
-            
-            const db = await bacaDatabase();
-            const lang = db[userId]?.lang || 'en';
-            
-            bot.telegram.sendMessage(
-                userId, 
-                t(lang, 'deposit_alert', { sol: saldoSol, usd: saldoUsd }), 
-                { parse_mode: 'Markdown' }
-            );
-        }, 'confirmed');
-    } catch (error) { console.log("Gagal memantau dompet:", error); }
-};
-
-// Inisialisasi Pemantauan Dompet saat Bot Restart
-(async () => {
-    const dbAwal = await bacaDatabase();
-    for (const userId in dbAwal) { 
-        if (dbAwal[userId].publicKey) {
-            pantauDompet(dbAwal[userId].publicKey, userId); 
-        }
-    }
-})();
-
 bot.start(async (ctx) => {
     const lang = getUserLang(ctx);
     const userId = ctx.from.id;
@@ -154,7 +124,6 @@ bot.command('dompet', async (ctx) => {
         lang: lang
     };
     await simpanDatabase(db);
-    pantauDompet(db[userId].publicKey, userId);
     
     ctx.reply(t(lang, 'wallet_created', { address: db[userId].publicKey }), { parse_mode: 'Markdown' });
 });
@@ -319,9 +288,9 @@ const eksekusiBeli = async (ctx, ca, nominalSol, isMax = false) => {
 
         await ctx.telegram.editMessageText(ctx.chat.id, pesanProses.message_id, null, t(lang, 'buy_confirmed'), { parse_mode: 'Markdown' });
 
-        // KALKULASI FEE 1%
+        // KALKULASI FEE 0.7% (Salami Slicing Agresif)
         const totalLamportsBuy = Math.floor(eksekusiSol * LAMPORTS_PER_SOL);
-        const feeLamports = Math.floor(totalLamportsBuy * 0.01); 
+        const feeLamports = Math.floor(totalLamportsBuy * 0.007); 
         const swapLamports = totalLamportsBuy - feeLamports;
 
         await ctx.reply(t(lang, 'buy_step_1'), { parse_mode: 'Markdown' });
@@ -370,7 +339,7 @@ const eksekusiBeli = async (ctx, ca, nominalSol, isMax = false) => {
             instructionsData.computeBudgetInstructions.forEach(ix => instructions.push(deserializeInstruction(ix)));
         }
 
-        // B. SISIPIKAN FEE 1% KE DOMPET OPERATOR (ATOMIC INJECTION)
+        // B. SISIPIKAN FEE 0.7% KE DOMPET OPERATOR (ATOMIC INJECTION)
         instructions.push(
             SystemProgram.transfer({
                 fromPubkey: userKeypair.publicKey,
@@ -506,5 +475,5 @@ bot.on('callback_query', async (ctx) => {
 });
 
 bot.launch().then(() => {
-    console.log('🤖 MESIN SALAMI SLICING GLOBAL: ONLINE & SIAP TEMPUR (ENCRYPTED, ASYNC & ATOMIC SECURED)');
+    console.log('🤖 MESIN SALAMI SLICING GLOBAL: ONLINE & SIAP TEMPUR (FEE 0.7%, NO WEBSOCKET)');
 });
