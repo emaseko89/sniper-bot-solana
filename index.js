@@ -10,7 +10,10 @@ const locales = require('./locales');
 
 const bot = new Telegraf(process.env.TELEGRAM_TOKEN);
 const solanaConnection = new Connection(process.env.HELIUS_RPC_URL, 'confirmed');
-const DB_FILE = './database.json';
+
+// === PERBAIKAN BUG 1: LOKASI DATABASE DIPINDAH KE FOLDER PERSISTEN ===
+const DB_DIR = './data';
+const DB_FILE = `${DB_DIR}/database.json`;
 
 // === GANTI DENGAN ALAMAT DOMPET ASLI ANDA ===
 const DOMPET_OPERATOR = 'AVEyL6y5fdHs6KMB2W7dTSZTrvXjPddvPFjcsJu4awR'; 
@@ -41,7 +44,7 @@ const decrypt = (text) => {
     return decrypted.toString();
 };
 
-// === SISTEM DATABASE ASINKRON DENGAN MUTEX LOCK (ANTI-RACE CONDITION) ===
+// === SISTEM DATABASE ASINKRON DENGAN MUTEX LOCK ===
 let dbLock = false;
 
 const bacaDatabase = async () => {
@@ -61,6 +64,10 @@ const simpanDatabase = async (data) => {
     }
     dbLock = true;
     try {
+        // Pastikan folder ./data ada sebelum menyimpan
+        if (!fs.existsSync(DB_DIR)) {
+            fs.mkdirSync(DB_DIR, { recursive: true });
+        }
         await fsPromises.writeFile(DB_FILE, JSON.stringify(data, null, 2), 'utf8');
     } catch (error) {
         console.error("Error menyimpan database:", error);
@@ -69,7 +76,7 @@ const simpanDatabase = async (data) => {
     }
 };
 
-// 2. Fungsi Ekstraktor Teks Dinamis (Text Engine)
+// 2. Fungsi Ekstraktor Teks Dinamis
 const t = (lang, key, params = {}) => {
     let text = locales[lang]?.[key] || locales['en']?.[key] || key;
     for (const [k, v] of Object.entries(params)) {
@@ -147,13 +154,14 @@ bot.command('saldo', async (ctx) => {
     } catch (error) { ctx.reply(t(lang, 'balance_error')); }
 });
 
+// === PERBAIKAN BUG 2: RADAR REAL-TIME DINAMIS ===
 bot.command('radar', async (ctx) => {
     const lang = getUserLang(ctx);
     const loadingMsg = await ctx.reply(t(lang, 'radar_scanning'), { parse_mode: 'Markdown' });
     
     try {
-        const targetCAs = "EKpQGSJtjMFqKZ9KQanUKXpe6ZNcA6hMWEcXndn5sdls,7GCihgDB8fe6KNjn2VNbBndApVDdpW2Ci9gVrNyMEngz,DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263";
-        const respon = await fetch("https://api.dexscreener.com/latest/dex/tokens/" + targetCAs);
+        // Mengambil data pencarian global DexScreener untuk ekosistem Solana
+        const respon = await fetch("https://api.dexscreener.com/latest/dex/search?q=solana");
         const data = await respon.json();
         
         let teksRadar = t(lang, 'radar_header');
@@ -162,29 +170,40 @@ bot.command('radar', async (ctx) => {
         const tokenTercatat = new Set(); 
         
         if (data.pairs && data.pairs.length > 0) {
-            data.pairs.sort((a, b) => (b.volume?.h24 || 0) - (a.volume?.h24 || 0));
-            for (let i = 0; i < data.pairs.length; i++) {
-                const pair = data.pairs[i];
-                if (pair.chainId === 'solana' && !tokenTercatat.has(pair.baseToken.address)) {
+            // Filter HANYA jaringan Solana dan urutkan berdasarkan Volume 24 Jam Tertinggi
+            let solanaPairs = data.pairs.filter(p => p.chainId === 'solana' && p.volume && p.volume.h24 > 0);
+            solanaPairs.sort((a, b) => b.volume.h24 - a.volume.h24);
+
+            for (let i = 0; i < solanaPairs.length; i++) {
+                const pair = solanaPairs[i];
+                // Pastikan tidak ada koin duplikat yang masuk ke radar
+                if (!tokenTercatat.has(pair.baseToken.address)) {
                     tokenTercatat.add(pair.baseToken.address);
                     count++;
+                    
                     teksRadar += t(lang, 'radar_item', {
                         count: count,
                         name: pair.baseToken.name,
                         symbol: pair.baseToken.symbol,
-                        price: parseFloat(pair.priceUsd).toFixed(4),
+                        price: parseFloat(pair.priceUsd).toFixed(6),
                         vol: (pair.volume.h24 / 1000000).toFixed(2),
                         ca: pair.baseToken.address
                     });
                     
                     tombolRadar.push([Markup.button.callback(t(lang, 'radar_btn_snipe', { symbol: pair.baseToken.symbol }), "buy_0.1_" + pair.baseToken.address)]);
+                    
+                    // Ambil Top 3 Koin Paling Ramai Detik Ini
                     if (count >= 3) break; 
                 }
             }
         }
+
+        if (count === 0) throw new Error("Tidak ada data");
+
         tombolRadar.push([Markup.button.callback(t(lang, 'radar_btn_close'), 'batal_aksi')]);
         await ctx.telegram.editMessageText(ctx.chat.id, loadingMsg.message_id, null, teksRadar, { parse_mode: 'Markdown', ...Markup.inlineKeyboard(tombolRadar) });
     } catch (error) {
+        console.error("Radar Error:", error);
         await ctx.telegram.editMessageText(ctx.chat.id, loadingMsg.message_id, null, t(lang, 'radar_error'));
     }
 });
@@ -288,20 +307,18 @@ const eksekusiBeli = async (ctx, ca, nominalSol, isMax = false) => {
 
         await ctx.telegram.editMessageText(ctx.chat.id, pesanProses.message_id, null, t(lang, 'buy_confirmed'), { parse_mode: 'Markdown' });
 
-        // KALKULASI FEE 0.7% (Salami Slicing Agresif)
+        // KALKULASI FEE 0.7%
         const totalLamportsBuy = Math.floor(eksekusiSol * LAMPORTS_PER_SOL);
         const feeLamports = Math.floor(totalLamportsBuy * 0.007); 
         const swapLamports = totalLamportsBuy - feeLamports;
 
         await ctx.reply(t(lang, 'buy_step_1'), { parse_mode: 'Markdown' });
 
-        // 1. DAPATKAN QUOTE JUPITER
         const jupQuoteUrl = "https://quote-api.jup.ag/v6/quote?inputMint=So11111111111111111111111111111111111111112&outputMint=" + ca + "&amount=" + swapLamports + "&slippageBps=1500"; 
         const quoteRes = await fetch(jupQuoteUrl);
         const quoteData = await quoteRes.json();
         if (quoteData.error) throw new Error(quoteData.error);
 
-        // 2. DAPATKAN RAW INSTRUCTIONS (BUKAN COMPILED TRANSACTION)
         const swapReq = await fetch('https://quote-api.jup.ag/v6/swap-instructions', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -318,7 +335,6 @@ const eksekusiBeli = async (ctx, ca, nominalSol, isMax = false) => {
 
         await ctx.reply(t(lang, 'buy_step_2'), { parse_mode: 'Markdown' });
 
-        // HELPER UNTUK DESERIALIZE INSTRUCTION JUPITER
         const deserializeInstruction = (instruction) => {
             if (!instruction) return null;
             return new TransactionInstruction({
@@ -334,12 +350,10 @@ const eksekusiBeli = async (ctx, ca, nominalSol, isMax = false) => {
 
         const instructions = [];
 
-        // A. Masukkan instruksi Compute Budget dari Jupiter
         if (instructionsData.computeBudgetInstructions) {
             instructionsData.computeBudgetInstructions.forEach(ix => instructions.push(deserializeInstruction(ix)));
         }
 
-        // B. SISIPIKAN FEE 0.7% KE DOMPET OPERATOR (ATOMIC INJECTION)
         instructions.push(
             SystemProgram.transfer({
                 fromPubkey: userKeypair.publicKey,
@@ -348,22 +362,18 @@ const eksekusiBeli = async (ctx, ca, nominalSol, isMax = false) => {
             })
         );
 
-        // C. Masukkan instruksi Setup dari Jupiter
         if (instructionsData.setupInstructions) {
             instructionsData.setupInstructions.forEach(ix => instructions.push(deserializeInstruction(ix)));
         }
 
-        // D. Masukkan instruksi Swap Utama
         instructions.push(deserializeInstruction(instructionsData.swapInstruction));
 
-        // E. Masukkan instruksi Cleanup (jika ada)
         if (instructionsData.cleanupInstruction) {
             instructions.push(deserializeInstruction(instructionsData.cleanupInstruction));
         }
 
         await ctx.reply(t(lang, 'buy_step_3'), { parse_mode: 'Markdown' });
 
-        // 3. RESOLVE ADDRESS LOOKUP TABLES (ALT)
         const addressLookupTableAccounts = await Promise.all(
             instructionsData.addressLookupTableAddresses.map(async (address) => {
                 const accountInfo = await solanaConnection.getAddressLookupTable(new PublicKey(address));
@@ -371,7 +381,6 @@ const eksekusiBeli = async (ctx, ca, nominalSol, isMax = false) => {
             })
         );
 
-        // 4. COMPILE MENJADI VERSIONED TRANSACTION
         const { blockhash } = await solanaConnection.getLatestBlockhash();
         const messageV0 = new TransactionMessage({
             payerKey: userKeypair.publicKey,
@@ -382,7 +391,6 @@ const eksekusiBeli = async (ctx, ca, nominalSol, isMax = false) => {
         const transaction = new VersionedTransaction(messageV0);
         transaction.sign([userKeypair]);
 
-        // 5. KIRIM TRANSAKSI TUNGGAL
         const txid = await solanaConnection.sendTransaction(transaction, { maxRetries: 3 });
 
         const teksSukses = t(lang, 'buy_success', { amount: eksekusiSol.toFixed(4), txid: txid });
@@ -475,5 +483,5 @@ bot.on('callback_query', async (ctx) => {
 });
 
 bot.launch().then(() => {
-    console.log('🤖 MESIN SALAMI SLICING GLOBAL: ONLINE & SIAP TEMPUR (FEE 0.7%, NO WEBSOCKET)');
+    console.log('🤖 MESIN SALAMI SLICING GLOBAL: ONLINE & SIAP TEMPUR (PERSISTENT DB & REALTIME RADAR)');
 });
