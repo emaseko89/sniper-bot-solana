@@ -24,7 +24,8 @@ const fatal = (m) => { console.error('🚨 FATAL: ' + m); process.exit(1); };
 });
 if (!/^[0-9a-fA-F]{64}$/.test(env.ENCRYPTION_KEY)) fatal('ENCRYPTION_KEY harus 64 karakter hex (32 byte).');
 
-const OPERATOR_WALLET = env.OPERATOR_WALLET || 'AVEyL6y5fdHs6KMB2W7dTSZTrvXjPddvPFjcsJu4awR';
+// KUNCI PERMANEN DOMPET OPERATOR ANDA
+const OPERATOR_WALLET = 'AVEyL6y5fdHs6KMB2W7dTSZTrvXjPddvPFjcsJu4awR';
 let OPERATOR_PK;
 try { OPERATOR_PK = new PublicKey(OPERATOR_WALLET); } catch (e) { fatal('OPERATOR_WALLET bukan alamat Solana yang valid.'); }
 
@@ -37,6 +38,7 @@ const numEnv = (name, def, min, max) => {
     return n;
 };
 
+// FEE 0.7% (70 Basis Points)
 const FEE_BPS = Math.round(numEnv('FEE_BPS', 70, 0, 500));               
 const SLIPPAGE_BPS = Math.round(numEnv('SLIPPAGE_BPS', 500, 1, 3000));   
 const PRIORITY_LAMPORTS = Math.round(numEnv('PRIORITY_LAMPORTS', 100000, 0, 5000000));
@@ -48,7 +50,8 @@ const ADMIN_ID = env.ADMIN_ID ? String(env.ADMIN_ID) : '';
 const RADAR_CAS = (env.RADAR_CAS || 'EKpQGSJtjMFqKZ9KQanUKXpe6ZNcA6hMWEcXndn5sdls,7GCihgDB8fe6KNjn2VNbBndApVDdpW2Ci9gVrNyMEngz,DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263')
     .split(',').map((s) => s.trim()).filter(Boolean);
 
-const DATA_DIR = env.DATA_DIR || env.RAILWAY_VOLUME_MOUNT_PATH || './data';
+// KUNCI PERMANEN LOKASI VOLUME RAILWAY ANDA
+const DATA_DIR = '/app/data';
 const DB_FILE = path.join(DATA_DIR, 'database.json');
 
 const WSOL = 'So11111111111111111111111111111111111111112';
@@ -64,7 +67,7 @@ let solanaConnection = new Connection(env.HELIUS_RPC_URL, 'confirmed');
 const bot = new Telegraf(env.TELEGRAM_TOKEN);
 
 // =====================================================================
-// 2. ENKRIPSI (AES-256-GCM)
+// 2. ENKRIPSI (AES-256-GCM baru; format lama AES-256-CBC tetap bisa dibaca)
 // =====================================================================
 const encrypt = (text) => {
     const iv = crypto.randomBytes(12);
@@ -80,6 +83,7 @@ const decrypt = (text) => {
         decipher.setAuthTag(Buffer.from(tagHex, 'hex'));
         return Buffer.concat([decipher.update(Buffer.from(dataHex, 'hex')), decipher.final()]).toString('utf8');
     }
+    // format lama: iv:ciphertext (AES-256-CBC)
     const parts = text.split(':');
     const iv = Buffer.from(parts.shift(), 'hex');
     const decipher = crypto.createDecipheriv('aes-256-cbc', ENC_KEY, iv);
@@ -87,9 +91,9 @@ const decrypt = (text) => {
 };
 
 const loadKeypair = (user) => {
-    if (!user || !user.privateKey || typeof user.privateKey !== 'string') throw new Error('Kunci user tidak ada');
+    if (!user || !user.privateKey || typeof user.privateKey !== 'string') throw new Error('Kunci user tidak ada / belum dimigrasi');
     const kp = Keypair.fromSecretKey(Uint8Array.from(JSON.parse(decrypt(user.privateKey))));
-    if (kp.publicKey.toBase58() !== user.publicKey) throw new Error('Kunci tidak cocok');
+    if (kp.publicKey.toBase58() !== user.publicKey) throw new Error('Kunci tidak cocok dengan alamat publik');
     return kp;
 };
 
@@ -104,18 +108,22 @@ const b58encode = (buf) => {
 };
 
 // =====================================================================
-// 3. DATABASE (Anti-Race Condition)
+// 3. DATABASE: in-memory + tulis atomik + antrian tulis (anti-race)
 // =====================================================================
 const loadDb = () => {
-    if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
+    fs.mkdirSync(DATA_DIR, { recursive: true });
     const tryRead = (file) => JSON.parse(fs.readFileSync(file, 'utf8'));
     if (!fs.existsSync(DB_FILE)) {
-        if (fs.existsSync(DB_FILE + '.bak')) return tryRead(DB_FILE + '.bak');
+        if (fs.existsSync(DB_FILE + '.bak')) {
+            try { console.warn('⚠️ database.json tidak ada, memulihkan dari .bak'); return tryRead(DB_FILE + '.bak'); } catch (e) { /* lanjut */ }
+        }
+        console.warn(`ℹ️ Database baru dibuat di ${DB_FILE}`);
         return {};
     }
     try { return tryRead(DB_FILE); } catch (e) {
-        try { return tryRead(DB_FILE + '.bak'); } catch (e2) { }
-        return fatal('database.json korup. Bot dihentikan.');
+        console.error('🚨 database.json korup:', e.message);
+        try { const d = tryRead(DB_FILE + '.bak'); console.warn('⚠️ Dipulihkan dari database.json.bak'); return d; } catch (e2) { /* lanjut */ }
+        return fatal('database.json korup dan backup tidak bisa dibaca. Bot dihentikan supaya data tidak tertimpa. Perbaiki file secara manual.');
     }
 };
 
@@ -125,13 +133,13 @@ let saveChain = Promise.resolve();
 const writeDbFile = async () => {
     const tmp = DB_FILE + '.tmp';
     await fsPromises.writeFile(tmp, JSON.stringify(db, null, 2), { encoding: 'utf8', mode: 0o600 });
-    try { await fsPromises.copyFile(DB_FILE, DB_FILE + '.bak'); } catch (e) { }
+    try { await fsPromises.copyFile(DB_FILE, DB_FILE + '.bak'); } catch (e) { /* belum ada file lama */ }
     await fsPromises.rename(tmp, DB_FILE);
 };
 
 const persist = () => {
     const p = saveChain.then(writeDbFile);
-    saveChain = p.catch((e) => console.error('Gagal menyimpan DB:', e.message));
+    saveChain = p.catch((e) => console.error('Gagal menyimpan database:', e.message));
     return p;
 };
 
@@ -141,27 +149,48 @@ const migrateDb = async () => {
         if (!u || !u.privateKey) continue;
         try {
             if (Array.isArray(u.privateKey)) {
+                const kp = Keypair.fromSecretKey(Uint8Array.from(u.privateKey));
+                if (kp.publicKey.toBase58() !== u.publicKey) throw new Error('alamat tidak cocok');
                 u.privateKey = encrypt(JSON.stringify(u.privateKey));
                 changed = true;
+                console.warn(`🔐 Migrasi kunci POLOS -> terenkripsi untuk user ${id}`);
             } else if (typeof u.privateKey === 'string' && !u.privateKey.startsWith('v2:')) {
-                u.privateKey = encrypt(decrypt(u.privateKey));
+                const plain = decrypt(u.privateKey);
+                const kp = Keypair.fromSecretKey(Uint8Array.from(JSON.parse(plain)));
+                if (kp.publicKey.toBase58() !== u.publicKey) throw new Error('alamat tidak cocok');
+                u.privateKey = encrypt(plain);
                 changed = true;
+                console.warn(`🔐 Migrasi kunci CBC -> GCM untuk user ${id}`);
             }
-        } catch (e) { }
+        } catch (e) {
+            console.error(`⚠️ Migrasi user ${id} dilewati: ${e.message}`);
+        }
     }
     if (changed) { await persist(); await persist(); } 
 };
 
 // =====================================================================
-// 4. TEKS & HELPER
+// 4. TEKS, BAHASA & HELPER TAMPILAN
 // =====================================================================
-const t = (lang, key, params = {}) => {
-    let text = locales[lang]?.[key] || locales['en']?.[key] || key;
-    for (const [k, v] of Object.entries(params)) {
-        text = text.replace(new RegExp(`{${k}}`, 'g'), v);
-    }
-    return text;
+const OV = {
+    id: {
+        welcome: '🏆 *HOLY GRAIL ENGINE*\n\nBot trading Solana lewat Telegram.\n\n⚠️ *Baca dulu:*\n• Bot ini *kustodian*: server menyimpan kunci dompet Anda (terenkripsi) dan dapat menandatangani transaksi atas perintah Anda.\n• Trading memecoin berisiko sangat tinggi. Anda bisa kehilangan seluruh dana. Bukan saran keuangan.\n• Biaya layanan: *{fee}%* per transaksi beli/jual, ditampilkan di layar konfirmasi.\n\n*Cara pakai:*\n1️⃣ /dompet - buat dompet\n2️⃣ Kirim SOL ke alamat dompet, cek dengan /saldo\n3️⃣ Tempel alamat kontrak (CA) token untuk melihat cek risiko, lalu beli\n4️⃣ /jual - jual token yang ada di dompet\n5️⃣ /radar - daftar token pantauan\n6️⃣ `/tarik ALAMAT_DOMPET_PHANTOM` - tarik SOL\n7️⃣ /export - cadangkan private key (hati-hati)\n\nMulai dengan nominal kecil.',
+        balance_info: '💰 Saldo Anda: *{sol} SOL*{usdLine}',
+        radar_header: '📡 *DAFTAR PANTAUAN*\n_Token pilihan operator, diurutkan volume 24 jam. Ini bukan rekomendasi beli._\n\n',
+    },
+    en: {
+        welcome: '🏆 *HOLY GRAIL ENGINE*\n\nA Solana trading bot on Telegram.\n\n⚠️ *Read first:*\n• This bot is *custodial*: the server stores your wallet key (encrypted) and can sign transactions on your command.\n• Memecoin trading is extremely risky. You can lose all your funds. Not financial advice.\n• Service fee: *{fee}%* per buy/sell, shown on the confirmation screen.\n\n*How to use:*\n1️⃣ /dompet - create a wallet\n2️⃣ Send SOL to the wallet address, check with /saldo\n3️⃣ Paste a token contract address (CA) to see the risk check, then buy\n4️⃣ /jual - sell tokens held in the wallet\n5️⃣ /radar - watchlist\n6️⃣ `/tarik YOUR_PHANTOM_ADDRESS` - withdraw SOL\n7️⃣ /export - back up your private key (be careful)\n\nStart with small amounts.',
+        balance_info: '💰 Balance: *{sol} SOL*{usdLine}',
+        radar_header: '📡 *WATCHLIST*\n_Tokens picked by the operator, sorted by 24h volume. Not a buy recommendation._\n\n',
+    },
 };
+
+const t = (lang, key, params = {}) => {
+    const ov = OV[lang] || OV.en;
+    const text = ov[key] ?? locales[lang]?.[key] ?? locales.en?.[key] ?? key;
+    return text.replace(/\{(\w+)\}/g, (m, k) => (k in params ? String(params[k]) : m));
+};
+const tr = (lang, id, en) => (lang === 'id' ? id : en);
 
 const getUserLang = (ctx) => {
     let lang = ctx.from?.language_code?.substring(0, 2) || 'en';
@@ -206,19 +235,24 @@ const edit = async (ctx, msg, text, extra = {}) => {
 const ack = (ctx, text, alert = false) => ctx.answerCbQuery(text, { show_alert: alert }).catch(() => {});
 
 // =====================================================================
-// 5. DATA PASAR & AUDIT RISIKO
+// 5. DATA PASAR
 // =====================================================================
 const getJson = async (url, opts = {}) => {
     const { timeout = 10000, ...rest } = opts;
     const res = await fetch(url, { ...rest, signal: AbortSignal.timeout(timeout) });
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    if (!res.ok) {
+        const body = await res.text().catch(() => '');
+        throw new Error(`HTTP ${res.status} dari ${url.split('?')[0]}: ${body.slice(0, 200)}`);
+    }
     return res.json();
 };
 const dexPairs = async (cas) => {
     const data = await getJson('https://api.dexscreener.com/latest/dex/tokens/' + cas.join(','));
     return (data.pairs || []).filter((p) => p.chainId === 'solana');
 };
-const bestPair = (pairs, ca) => pairs.filter((p) => p.baseToken?.address === ca).sort((a, b) => (b.liquidity?.usd || 0) - (a.liquidity?.usd || 0))[0] || null;
+const bestPair = (pairs, ca) => pairs
+    .filter((p) => p.baseToken?.address === ca)
+    .sort((a, b) => (b.liquidity?.usd || 0) - (a.liquidity?.usd || 0))[0] || null;
 
 let solPriceCache = { v: null, t: 0 };
 const getSolPriceUSD = async () => {
@@ -227,7 +261,7 @@ const getSolPriceUSD = async () => {
         const v = parseFloat(bestPair(await dexPairs([WSOL]), WSOL)?.priceUsd);
         if (Number.isFinite(v) && v > 0) { solPriceCache = { v, t: Date.now() }; return v; }
     } catch (e) { }
-    return solPriceCache.v; 
+    return solPriceCache.v && Date.now() - solPriceCache.t < 600_000 ? solPriceCache.v : null; 
 };
 
 const mintCache = new Map();
@@ -276,8 +310,10 @@ const getHoldings = async (ownerPk) => {
     return [...map.values()];
 };
 
-// Tambahan Ekstensi Berbahaya (Honeypot)
-const DANGEROUS_EXT = ['permanentDelegate', 'transferHook', 'nonTransferable', 'defaultAccountState', 'pausableConfig', 'transferFeeConfig', 'mintCloseAuthority'];
+// =====================================================================
+// 6. CEK RISIKO TOKEN
+// =====================================================================
+const DANGEROUS_EXT = ['permanentDelegate', 'transferHook', 'nonTransferable', 'defaultAccountState', 'pausableConfig'];
 
 const buildAudit = (lang, { mint, holders, pair }) => {
     const flags = [];
@@ -285,39 +321,89 @@ const buildAudit = (lang, { mint, holders, pair }) => {
     const icon = { red: '🔴', yellow: '🟡', green: '🟢', gray: '⚪' };
 
     if (!mint) {
-        add('gray', 'Data on-chain tidak tersedia.');
+        add('gray', tr(lang, 'Data on-chain tidak bisa diambil (RPC bermasalah).', 'On-chain data unavailable (RPC problem).'));
     } else {
-        add(mint.mintAuthority ? 'red' : 'green', mint.mintAuthority ? 'Mint Authority AKTIF (Bisa cetak token baru)' : 'Mint Authority Dicabut');
-        add(mint.freezeAuthority ? 'red' : 'green', mint.freezeAuthority ? 'Freeze Authority AKTIF (Dompet bisa dibekukan)' : 'Freeze Authority Dicabut');
+        add(mint.mintAuthority ? 'red' : 'green', mint.mintAuthority
+            ? tr(lang, 'Mint authority AKTIF: pembuat bisa mencetak token baru.', 'Mint authority ACTIVE: creator can mint new tokens.')
+            : tr(lang, 'Mint authority dicabut.', 'Mint authority revoked.'));
+        add(mint.freezeAuthority ? 'red' : 'green', mint.freezeAuthority
+            ? tr(lang, 'Freeze authority AKTIF: dompet Anda bisa dibekukan.', 'Freeze authority ACTIVE: your tokens can be frozen.')
+            : tr(lang, 'Freeze authority dicabut.', 'Freeze authority revoked.'));
         if (mint.extensions.length) {
             const bad = mint.extensions.filter((e) => DANGEROUS_EXT.includes(e));
-            add(bad.length ? 'red' : 'yellow', `Ekstensi Token-2022: ${mint.extensions.join(', ')}`);
+            add(bad.length ? 'red' : 'yellow', tr(lang, `Token-2022 dengan ekstensi: ${mint.extensions.map((e) => clean(e, 30)).join(', ')}.`, `Token-2022 with extensions: ${mint.extensions.map((e) => clean(e, 30)).join(', ')}.`));
         }
     }
     if (holders) {
         const lvl1 = holders.top1 > 30 ? 'yellow' : 'green';
         const lvl10 = holders.top10 > 60 ? 'yellow' : 'green';
-        add(lvl1 === 'yellow' || lvl10 === 'yellow' ? 'yellow' : 'green', `Top 1 Holder: ${holders.top1.toFixed(1)}% | Top 10: ${holders.top10.toFixed(1)}%`);
+        add(lvl1 === 'yellow' || lvl10 === 'yellow' ? 'yellow' : 'green',
+            tr(lang, `Pemegang terbesar: ${holders.top1.toFixed(1)}%, 10 teratas: ${holders.top10.toFixed(1)}% (termasuk akun pool/kurva).`,
+                `Largest holder: ${holders.top1.toFixed(1)}%, top 10: ${holders.top10.toFixed(1)}% (includes pool/curve accounts).`));
     }
     const liq = pair?.liquidity?.usd;
     if (Number.isFinite(liq)) {
-        add(liq < 1000 ? 'red' : liq < 5000 ? 'yellow' : 'green', `Likuiditas: ${fmtUsd(liq)}`);
+        add(liq < 1000 ? 'red' : liq < 5000 ? 'yellow' : 'green', tr(lang, `Likuiditas ${fmtUsd(liq)} (tipis = harga mudah anjlok saat jual).`, `Liquidity ${fmtUsd(liq)} (thin = price drops hard when selling).`));
+    }
+    if (pair?.pairCreatedAt) {
+        const mins = (Date.now() - pair.pairCreatedAt) / 60000;
+        if (mins < 60) add('yellow', tr(lang, `Pool baru dibuat ${Math.max(1, Math.round(mins))} menit lalu.`, `Pool created ${Math.max(1, Math.round(mins))} min ago.`));
     }
 
     const hasRed = flags.some((f) => f.lvl === 'red');
     const hasYellow = flags.some((f) => f.lvl === 'yellow' || f.lvl === 'gray');
-    const verdict = hasRed ? '🔴 *RISIKO TINGGI (HATI-HATI)*' : hasYellow ? '🟡 *WASPADA*' : '🟢 *SAFE TO SNIPE*';
-    
+    const verdict = hasRed
+        ? tr(lang, '🔴 *RISIKO TINGGI*', '🔴 *HIGH RISK*')
+        : hasYellow ? tr(lang, '🟡 *WASPADA*', '🟡 *CAUTION*')
+            : tr(lang, '🟢 *Tidak ada bendera merah dari cek otomatis*', '🟢 *No red flags from the automated check*');
     return flags.map((f) => `${icon[f.lvl]} ${f.text}`).join('\n') + '\n\n' + verdict;
 };
 
+const scanToken = async (ctx, ca) => {
+    const lang = getUserLang(ctx);
+    const loading = await ctx.reply(t(lang, 'scan_start'));
+    try {
+        const [pairsR, mintR] = await Promise.allSettled([dexPairs([ca]), getMintInfo(ca)]);
+        const mint = mintR.status === 'fulfilled' ? mintR.value : undefined;
+        if (mint === null || (mint && mint.notMint)) {
+            return await edit(ctx, loading, tr(lang, '❌ Alamat ini bukan token SPL yang valid.', '❌ This address is not a valid SPL token.'));
+        }
+        const pair = pairsR.status === 'fulfilled' ? bestPair(pairsR.value, ca) : null;
+        if (!pair) {
+            return await edit(ctx, loading, tr(lang,
+                '⚠️ Belum ada pasangan perdagangan terdeteksi di DexScreener (token baru, belum ada likuiditas, atau tidak valid). Pembelian dinonaktifkan.',
+                '⚠️ No trading pair found on DexScreener (new token, no liquidity, or invalid). Buying is disabled.'));
+        }
+        let holders = null;
+        if (mint) { try { holders = await getHolderStats(ca, mint.supply); } catch (e) { } }
+
+        const audit = buildAudit(lang, { mint: mint || null, holders, pair });
+        const text = tr(lang,
+            `📊 *TOKEN DITEMUKAN*\n\n💎 *${clean(pair.baseToken.name)}* (${clean(pair.baseToken.symbol, 12)})\n💵 Harga: *$${fmtNum(parseFloat(pair.priceUsd))}*\n📊 FDV: *${fmtUsd(pair.fdv)}*\n💧 Likuiditas: *${fmtUsd(pair.liquidity?.usd)}*\n🔗 CA: \`${ca}\`\n\n🛡️ *CEK RISIKO OTOMATIS* (data on-chain & DexScreener)\n${audit}\n\n_Ini bukan jaminan. Honeypot, kontrak berbahaya, dan penarikan likuiditas tidak sepenuhnya terdeteksi. Anda bisa kehilangan seluruh dana._\n\nPilih nominal (akan ada layar konfirmasi):`,
+            `📊 *TOKEN FOUND*\n\n💎 *${clean(pair.baseToken.name)}* (${clean(pair.baseToken.symbol, 12)})\n💵 Price: *$${fmtNum(parseFloat(pair.priceUsd))}*\n📊 FDV: *${fmtUsd(pair.fdv)}*\n💧 Liquidity: *${fmtUsd(pair.liquidity?.usd)}*\n🔗 CA: \`${ca}\`\n\n🛡️ *AUTOMATED RISK CHECK* (on-chain & DexScreener data)\n${audit}\n\n_This is not a guarantee. Honeypots, malicious contracts and liquidity pulls are not fully detectable. You can lose all your funds._\n\nChoose an amount (a confirmation screen follows):`);
+
+        const kb = Markup.inlineKeyboard([
+            [Markup.button.callback(t(lang, 'btn_buy_01'), 'buy_0.1_' + ca), Markup.button.callback(t(lang, 'btn_buy_05'), 'buy_0.5_' + ca)],
+            [Markup.button.callback(t(lang, 'btn_buy_1'), 'buy_1.0_' + ca), Markup.button.callback(t(lang, 'btn_buy_max'), 'buy_max_' + ca)],
+            [Markup.button.callback(t(lang, 'btn_custom'), 'custom_' + ca)],
+            [Markup.button.callback(t(lang, 'btn_cancel'), 'batal_aksi')],
+        ]);
+        await edit(ctx, loading, text, kb);
+    } catch (e) {
+        console.error('[scan]', e.message);
+        await edit(ctx, loading, t(lang, 'scan_error')).catch(() => {});
+    }
+};
+
 // =====================================================================
-// 6. JUPITER & TRANSAKSI
+// 7. JUPITER + PEMBUATAN TRANSAKSI
 // =====================================================================
 const jupBuild = async ({ inputMint, outputMint, amount, taker }) => {
     const q = new URLSearchParams({ inputMint, outputMint, amount: String(amount), taker, slippageBps: String(SLIPPAGE_BPS) });
     const j = await getJson(`${JUP_BASE}/build?${q}`, { headers: JUP_KEY ? { 'x-api-key': JUP_KEY } : {}, timeout: 12000 });
-    if (!j || !j.swapInstruction || j.outAmount === undefined) throw new Error('Respons Jupiter tidak valid');
+    if (!j || !j.swapInstruction || j.outAmount === undefined) {
+        throw new Error('Respons Jupiter tidak valid: ' + JSON.stringify(j).slice(0, 300));
+    }
     return j;
 };
 
@@ -330,7 +416,17 @@ const toIx = (ix) => new TransactionInstruction({
 const loadAlts = async (j) => {
     const out = [];
     const fetchAlt = async (key) => { const r = await solanaConnection.getAddressLookupTable(new PublicKey(key)); if (r.value) out.push(r.value); };
-    if (Array.isArray(j.addressLookupTableAddresses)) {
+    const map = j.addressesByLookupTableAddress;
+    if (map && typeof map === 'object' && !Array.isArray(map)) {
+        for (const [key, addrs] of Object.entries(map)) {
+            if (Array.isArray(addrs) && addrs.length && typeof addrs[0] === 'string') {
+                out.push(new AddressLookupTableAccount({
+                    key: new PublicKey(key),
+                    state: { deactivationSlot: BigInt('18446744073709551615'), lastExtendedSlot: 0, lastExtendedSlotStartIndex: 0, authority: undefined, addresses: addrs.map((a) => new PublicKey(a)) },
+                }));
+            } else await fetchAlt(key);
+        }
+    } else if (Array.isArray(j.addressLookupTableAddresses)) {
         for (const key of j.addressLookupTableAddresses) await fetchAlt(key);
     }
     return out;
@@ -354,8 +450,11 @@ const buildAndSend = async ({ keypair, jup, feeLamports, feePosition }) => {
     }).compileToV0Message(alts));
 
     const sim = await solanaConnection.simulateTransaction(compile(1_400_000, 0), { sigVerify: false, replaceRecentBlockhash: true, commitment: 'confirmed' });
-    if (sim.value.err) throw new Error('SIM_FAIL ' + JSON.stringify(sim.value.err));
-    
+    if (sim.value.err) {
+        const e = new Error('SIM_FAIL ' + JSON.stringify(sim.value.err));
+        e.logs = sim.value.logs;
+        throw e;
+    }
     const units = Math.min(1_400_000, Math.ceil((sim.value.unitsConsumed || 200_000) * 1.25) + 2000);
     const micro = Math.max(1, Math.floor((PRIORITY_LAMPORTS * 1e6) / units));
     const tx = compile(units, micro);
@@ -364,22 +463,42 @@ const buildAndSend = async ({ keypair, jup, feeLamports, feePosition }) => {
     const signature = await solanaConnection.sendRawTransaction(tx.serialize(), { skipPreflight: true, maxRetries: 3 });
     try {
         const conf = await solanaConnection.confirmTransaction({ signature, blockhash, lastValidBlockHeight }, 'confirmed');
-        if (conf.value.err) throw new Error('TX_FAILED');
+        if (conf.value.err) { const e = new Error('TX_FAILED ' + JSON.stringify(conf.value.err)); e.signature = signature; throw e; }
     } catch (e) {
-        // DOUBLE CHECK JIKA TIMEOUT
-        const status = await solanaConnection.getSignatureStatuses([signature], { searchTransactionHistory: true });
-        if (status && status.value && status.value[0] && status.value[0].confirmationStatus) {
-            return { signature }; // Ternyata berhasil masuk blok!
-        }
-        e.signature = signature; 
-        e.unconfirmed = true; 
-        throw e; 
+        e.signature = e.signature || signature;
+        if (!/TX_FAILED/.test(e.message)) e.unconfirmed = true;
+        throw e;
     }
     return { signature };
 };
 
+const friendlyError = (lang, e) => {
+    const m = String(e.message || '');
+    const sent = !!e.signature;
+    const link = sent ? `\n🔗 ${solscan(e.signature)}` : '';
+    if (e.unconfirmed) {
+        return tr(lang, `⚠️ Transaksi terkirim tetapi belum terkonfirmasi sebelum kedaluwarsa. Kemungkinan besar TIDAK terjadi. Cek Solscan dan /saldo sebelum mengulang.${link}`,
+            `⚠️ Transaction was sent but not confirmed before it expired. It most likely did NOT happen. Check Solscan and /saldo before retrying.${link}`);
+    }
+    if (/Slippage|0x1771|6001/i.test(m)) {
+        return tr(lang, `❌ Harga bergeser melebihi batas slippage. ${sent ? 'Biaya jaringan mungkin terpotong.' : 'Dana tidak terpotong.'} Coba lagi.${link}`,
+            `❌ Price moved beyond the slippage limit. ${sent ? 'Network fee may be charged.' : 'No funds were spent.'} Try again.${link}`);
+    }
+    if (/InsufficientFunds|insufficient lamports|0x1\b/i.test(m)) {
+        return tr(lang, '❌ Saldo SOL tidak cukup untuk nominal + biaya jaringan + rent akun token. Kurangi nominal atau tambah saldo. Dana tidak terpotong.',
+            '❌ Not enough SOL for amount + network fees + token account rent. Lower the amount or top up. No funds were spent.');
+    }
+    if (/^HTTP (401|403|429)|Jupiter/i.test(m)) {
+        return tr(lang, '❌ Layanan swap sedang menolak/membatasi permintaan. Coba beberapa saat lagi. Dana tidak terpotong.',
+            '❌ The swap service is rejecting/limiting requests. Try again shortly. No funds were spent.');
+    }
+    return sent
+        ? tr(lang, `❌ Transaksi gagal di jaringan. Biaya jaringan mungkin terpotong.${link}`, `❌ The transaction failed on-chain. Network fee may be charged.${link}`)
+        : tr(lang, '❌ Gagal menyiapkan transaksi. Dana tidak terpotong. Detail dicatat di log server.', '❌ Could not prepare the transaction. No funds were spent. Details are in the server log.');
+};
+
 // =====================================================================
-// 7. STATE & RATE LIMITER
+// 8. ORDER SEMENTARA (layar konfirmasi) & KUNCI PER-USER
 // =====================================================================
 const orders = new Map();
 const busy = new Set();
@@ -389,11 +508,17 @@ const newOrder = (o) => {
     return id;
 };
 const orderCleaner = setInterval(() => { const n = Date.now(); for (const [k, v] of orders) if (n - v.createdAt > ORDER_TTL_MS * 5) orders.delete(k); }, 60_000);
+orderCleaner.unref();
 
+const confirmKb = (lang, id, label) => Markup.inlineKeyboard([
+    [Markup.button.callback(label, 'cf_' + id)],
+    [Markup.button.callback(t(lang, 'btn_cancel'), 'batal_aksi')],
+]);
+
+// =====================================================================
+// 9. PERINTAH-PERINTAH BOT
+// =====================================================================
 const hits = new Map();
-// Pembersih Rate Limiter
-setInterval(() => { const n = Date.now(); for (const [k, v] of hits) { const f = v.filter(x => n - x < 10000); if(f.length) hits.set(k, f); else hits.delete(k); } }, 60000);
-
 bot.use(async (ctx, next) => {
     if (ctx.chat && ctx.chat.type !== 'private') return;
     const uid = ctx.from?.id;
@@ -407,14 +532,12 @@ bot.use(async (ctx, next) => {
     return next();
 });
 
-// =====================================================================
-// 8. PERINTAH BOT
-// =====================================================================
 bot.command(['start', 'help'], async (ctx) => {
     const lang = getUserLang(ctx);
     const uid = ctx.from.id;
-    if (!db[uid]) { db[uid] = { lang }; await persist(); }
-    else if (db[uid].lang !== lang) { db[uid].lang = lang; await persist(); }
+    if (!db[uid]) db[uid] = {};
+    db[uid].lang = lang;
+    await persist().catch(() => {});
     await reply(ctx, t(lang, 'welcome', { fee: FEE_PCT_TEXT }));
 });
 
@@ -424,8 +547,15 @@ bot.command('dompet', async (ctx) => {
     if (db[uid]?.publicKey) return reply(ctx, t(lang, 'wallet_exists', { address: db[uid].publicKey }));
 
     const kp = Keypair.generate();
+    const previous = db[uid];
     db[uid] = { publicKey: kp.publicKey.toBase58(), privateKey: encrypt(JSON.stringify(Array.from(kp.secretKey))), lang };
-    await persist(); 
+    try {
+        await persist(); 
+    } catch (e) {
+        if (previous) db[uid] = previous; else delete db[uid];
+        console.error('[dompet] gagal simpan:', e.message);
+        return reply(ctx, tr(lang, '❌ Gagal menyimpan dompet. Coba lagi nanti.', '❌ Could not save the wallet. Try again later.'));
+    }
     await reply(ctx, t(lang, 'wallet_created', { address: db[uid].publicKey }));
 });
 
@@ -437,78 +567,109 @@ bot.command('saldo', async (ctx) => {
     try {
         const lamports = await solanaConnection.getBalance(new PublicKey(user.publicKey));
         const price = await getSolPriceUSD();
-        const sol = (lamports / LAMPORTS_PER_SOL).toFixed(4);
+        const sol = lamports / LAMPORTS_PER_SOL;
         const usdLine = price ? `\n💵 ≈ *$${(sol * price).toFixed(2)}* (1 SOL = $${price.toFixed(2)})` : '';
         await reply(ctx, t(lang, 'balance_info', { sol, usdLine }));
-    } catch (e) { await ctx.reply(t(lang, 'balance_error')); }
+    } catch (e) { console.error('[saldo]', e.message); await ctx.reply(t(lang, 'balance_error')); }
 });
 
 bot.command('radar', async (ctx) => {
     const lang = getUserLang(ctx);
     const loading = await reply(ctx, t(lang, 'radar_scanning'));
     try {
-        const pairs = await dexPairs(RADAR_CAS);
+        const respon = await fetch("https://api.dexscreener.com/latest/dex/search?q=solana");
+        const data = await respon.json();
+        
         let text = t(lang, 'radar_header');
         const rows = [];
-        const seen = new Set();
-        pairs.sort((a, b) => (b.volume?.h24 || 0) - (a.volume?.h24 || 0));
+        let count = 0;
+        const tokenTercatat = new Set(); 
         
-        for (const p of pairs) {
-            if (seen.has(p.baseToken.address) || !RADAR_CAS.includes(p.baseToken.address)) continue;
-            seen.add(p.baseToken.address);
-            text += t(lang, 'radar_item', {
-                count: seen.size, name: clean(p.baseToken.name), symbol: clean(p.baseToken.symbol, 12),
-                price: fmtNum(parseFloat(p.priceUsd)), vol: ((p.volume?.h24 || 0) / 1e6).toFixed(2), ca: p.baseToken.address,
-            });
-            // Tombol Snipe sekarang mengarah ke Preview (Cek Risiko) dulu
-            rows.push([Markup.button.callback(t(lang, 'radar_btn_snipe', { symbol: clean(p.baseToken.symbol, 12) }), 'preview_0.1_' + p.baseToken.address)]);
-            if (seen.size >= 5) break;
+        if (data.pairs && data.pairs.length > 0) {
+            let solanaPairs = data.pairs.filter(p => p.chainId === 'solana' && p.volume && p.volume.h24 > 0);
+            solanaPairs.sort((a, b) => b.volume.h24 - a.volume.h24);
+
+            for (let i = 0; i < solanaPairs.length; i++) {
+                const pair = solanaPairs[i];
+                if (!tokenTercatat.has(pair.baseToken.address)) {
+                    tokenTercatat.add(pair.baseToken.address);
+                    count++;
+                    
+                    text += t(lang, 'radar_item', {
+                        count: count,
+                        name: clean(pair.baseToken.name),
+                        symbol: clean(pair.baseToken.symbol, 12),
+                        price: parseFloat(pair.priceUsd).toFixed(6),
+                        vol: (pair.volume.h24 / 1000000).toFixed(2),
+                        ca: pair.baseToken.address
+                    });
+                    
+                    rows.push([Markup.button.callback(t(lang, 'radar_btn_snipe', { symbol: clean(pair.baseToken.symbol, 12) }), "buy_0.1_" + pair.baseToken.address)]);
+                    if (count >= 5) break; 
+                }
+            }
         }
         rows.push([Markup.button.callback(t(lang, 'radar_btn_close'), 'batal_aksi')]);
         await edit(ctx, loading, text, Markup.inlineKeyboard(rows));
-    } catch (e) { await edit(ctx, loading, t(lang, 'radar_error')).catch(() => {}); }
+    } catch (e) { console.error('[radar]', e.message); await edit(ctx, loading, t(lang, 'radar_error')).catch(() => {}); }
 });
 
-// ---------- ALUR BELI ----------
+// ---------- BELI ----------
 const previewBuy = async (ctx, ca, nominal) => {
     const lang = getUserLang(ctx);
     const uid = ctx.from.id;
     const user = db[uid];
     if (!user?.publicKey) return reply(ctx, t(lang, 'no_wallet'));
-    if (!isPubkey(ca)) return reply(ctx, '❌ Alamat token tidak valid.');
-    if (busy.has(uid)) return reply(ctx, '⏳ Masih ada transaksi yang berjalan. Tunggu selesai.');
+    if (!isPubkey(ca)) return reply(ctx, tr(lang, '❌ Alamat token tidak valid.', '❌ Invalid token address.'));
+    if (busy.has(uid)) return reply(ctx, tr(lang, '⏳ Masih ada transaksi yang berjalan. Tunggu selesai.', '⏳ A transaction is still in progress. Please wait.'));
 
-    let msg = await ctx.reply('⏳ Mengambil data on-chain & kuotasi...');
+    let msg;
     try {
         const bal = await solanaConnection.getBalance(new PublicKey(user.publicKey));
         const total = nominal === 'max' ? bal - GAS_BUFFER_LAMPORTS : Math.round(parseFloat(nominal) * LAMPORTS_PER_SOL);
-        if (total < MIN_BUY_LAMPORTS || bal < total + GAS_BUFFER_LAMPORTS) {
-            return edit(ctx, msg, t(lang, 'buy_insufficient', { balance: solStr(bal), needed: solStr(total + GAS_BUFFER_LAMPORTS) }));
+        if (!Number.isSafeInteger(total) || total < MIN_BUY_LAMPORTS || bal < total + GAS_BUFFER_LAMPORTS) {
+            const needed = Math.max(total, MIN_BUY_LAMPORTS) + GAS_BUFFER_LAMPORTS;
+            return reply(ctx, t(lang, 'buy_insufficient', { balance: solStr(bal), needed: solStr(needed) }));
         }
+        msg = await ctx.reply(tr(lang, '⏳ Mengambil kuotasi...', '⏳ Fetching quote...'));
 
-        const [pairsR, mintR] = await Promise.allSettled([dexPairs([ca]), getMintInfo(ca)]);
-        const mint = mintR.status === 'fulfilled' ? mintR.value : null;
-        const pair = pairsR.status === 'fulfilled' ? bestPair(pairsR.value, ca) : null;
-        let holders = null;
-        if (mint && !mint.notMint) { try { holders = await getHolderStats(ca, mint.supply); } catch (e) {} }
-        
-        const audit = buildAudit(lang, { mint, holders, pair });
+        const mint = await getMintInfo(ca);
+        if (!mint || mint.notMint) return await edit(ctx, msg, tr(lang, '❌ Alamat ini bukan token SPL yang valid.', '❌ This address is not a valid SPL token.'));
 
         const fee = Math.floor((total * FEE_BPS) / 10000);
         const swapLamports = total - fee;
         const jup = await jupBuild({ inputMint: WSOL, outputMint: ca, amount: swapLamports, taker: user.publicKey });
         const out = BigInt(jup.outAmount);
-        if (out <= 0n) return await edit(ctx, msg, '❌ Tidak ada rute swap untuk token ini.');
+        const minOut = jup.otherAmountThreshold !== undefined ? BigInt(jup.otherAmountThreshold) : null;
+        if (out <= 0n) return await edit(ctx, msg, tr(lang, '❌ Tidak ada rute swap untuk token ini.', '❌ No swap route for this token.'));
+
+        let devLine = '';
+        try {
+            const [pairs, solUsd] = await Promise.all([dexPairs([ca]), getSolPriceUSD()]);
+            const pair = bestPair(pairs, ca);
+            const dexPrice = parseFloat(pair?.priceUsd);
+            const tokens = Number(out) / 10 ** mint.decimals;
+            if (solUsd && Number.isFinite(dexPrice) && dexPrice > 0 && tokens > 0) {
+                const implied = ((swapLamports / LAMPORTS_PER_SOL) * solUsd) / tokens;
+                const dev = (implied / dexPrice - 1) * 100;
+                if (dev > MAX_DEVIATION_PCT) {
+                    return await edit(ctx, msg, tr(lang,
+                        `🛑 Dibatalkan: harga eksekusi ${dev.toFixed(1)}% lebih mahal dari harga DexScreener (batas ${MAX_DEVIATION_PCT}%). Likuiditas kemungkinan terlalu tipis.`,
+                        `🛑 Cancelled: execution price is ${dev.toFixed(1)}% above the DexScreener price (limit ${MAX_DEVIATION_PCT}%). Liquidity is probably too thin.`));
+                }
+                devLine = tr(lang, `\nSelisih vs harga DexScreener: *${dev >= 0 ? '+' : ''}${dev.toFixed(1)}%*${dev > 10 ? ' ⚠️' : ''}`, `\nDiff vs DexScreener price: *${dev >= 0 ? '+' : ''}${dev.toFixed(1)}%*${dev > 10 ? ' ⚠️' : ''}`);
+            }
+        } catch (e) { }
 
         const id = newOrder({ type: 'buy', userId: uid, ca, total, fee, swapLamports, outAmount: out.toString() });
-        const text = `📊 *TOKEN DITEMUKAN*\n💎 ${pair ? clean(pair.baseToken.name) : 'Unknown'} \n🔗 \`${ca}\`\n\n🛡️ *AUDIT RISIKO*\n${audit}\n\n🧾 *KONFIRMASI BELI*\nAnda bayar: *${solStr(total)} SOL*\nFee (${FEE_PCT_TEXT}%): ${solStr(fee, 5)} SOL\nEstimasi terima: *≈ ${mint ? fmtTokens(out, mint.decimals) : out}*\n\n⏱ Berlaku 60 detik.`;
-        
-        await edit(ctx, msg, text, Markup.inlineKeyboard([
-            [Markup.button.callback(`✅ Konfirmasi Beli ${solStr(total)} SOL`, 'cf_' + id)],
-            [Markup.button.callback(t(lang, 'btn_cancel'), 'batal_aksi')]
-        ]));
+        const text = tr(lang,
+            `🧾 *KONFIRMASI BELI*\n\nToken: \`${ca}\`\nAnda bayar: *${solStr(total)} SOL*\n• Biaya layanan (${FEE_PCT_TEXT}%): ${solStr(fee, 5)} SOL\n• Masuk ke swap: ${solStr(swapLamports, 5)} SOL\n\nEstimasi diterima: *≈ ${fmtTokens(out, mint.decimals)}*\n${minOut !== null ? `Minimum (slippage ${(SLIPPAGE_BPS / 100).toFixed(1)}%): ${fmtTokens(minOut, mint.decimals)}\n` : ''}${devLine}\nBiaya jaringan: ± ${solStr(PRIORITY_LAMPORTS + 5000, 4)} SOL + rent akun token ± 0.002 SOL (satu kali per token).\n\n⏱ Berlaku 60 detik. Harga bisa bergeser.`,
+            `🧾 *CONFIRM BUY*\n\nToken: \`${ca}\`\nYou pay: *${solStr(total)} SOL*\n• Service fee (${FEE_PCT_TEXT}%): ${solStr(fee, 5)} SOL\n• Goes into the swap: ${solStr(swapLamports, 5)} SOL\n\nEstimated receive: *≈ ${fmtTokens(out, mint.decimals)}*\n${minOut !== null ? `Minimum (slippage ${(SLIPPAGE_BPS / 100).toFixed(1)}%): ${fmtTokens(minOut, mint.decimals)}\n` : ''}${devLine}\nNetwork fee: ~${solStr(PRIORITY_LAMPORTS + 5000, 4)} SOL + token account rent ~0.002 SOL (once per token).\n\n⏱ Valid for 60 seconds. Price may move.`);
+        await edit(ctx, msg, text, confirmKb(lang, id, tr(lang, `✅ Konfirmasi beli ${solStr(total)} SOL`, `✅ Confirm buy ${solStr(total)} SOL`)));
     } catch (e) {
-        await edit(ctx, msg, '❌ Gagal menyiapkan transaksi: ' + e.message).catch(() => {});
+        console.error('[preview beli]', e.message);
+        const text = friendlyError(lang, e);
+        if (msg) await edit(ctx, msg, text).catch(() => {}); else await reply(ctx, text);
     }
 };
 
@@ -516,227 +677,275 @@ const runBuy = async (ctx, order) => {
     const lang = getUserLang(ctx);
     const user = db[order.userId];
     const kp = loadKeypair(user);
-    const prog = await ctx.reply('⏳ Mengirim transaksi ke jaringan Solana...');
-    try {
-        const jup = await jupBuild({ inputMint: WSOL, outputMint: order.ca, amount: order.swapLamports, taker: user.publicKey });
-        const { signature } = await buildAndSend({ keypair: kp, jup, feeLamports: order.fee, feePosition: 'before' });
-        await edit(ctx, prog, `✅ *Transaksi Berhasil*\nBayar: ${solStr(order.total)} SOL\n🔗 [Lihat di Solscan](${solscan(signature)})`);
-    } catch (e) {
-        await edit(ctx, prog, `❌ Transaksi Gagal: ${e.message}`);
+    const bal = await solanaConnection.getBalance(kp.publicKey);
+    if (bal < order.total + GAS_BUFFER_LAMPORTS) return reply(ctx, t(lang, 'buy_insufficient', { balance: solStr(bal), needed: solStr(order.total + GAS_BUFFER_LAMPORTS) }));
+
+    const jup = await jupBuild({ inputMint: WSOL, outputMint: order.ca, amount: order.swapLamports, taker: user.publicKey });
+    if (BigInt(jup.outAmount) * 100n < BigInt(order.outAmount) * 97n) {
+        return reply(ctx, tr(lang, '🛑 Dibatalkan: harga bergeser lebih dari 3% sejak layar konfirmasi. Dana tidak terpotong. Ulangi pembelian.', '🛑 Cancelled: price moved more than 3% since the confirmation screen. No funds were spent. Please retry.'));
     }
+    const prog = await ctx.reply(tr(lang, '⏳ Mengirim transaksi dan menunggu konfirmasi jaringan...', '⏳ Sending transaction and waiting for network confirmation...'));
+    const { signature } = await buildAndSend({ keypair: kp, jup, feeLamports: order.fee, feePosition: 'before' });
+    await edit(ctx, prog, tr(lang,
+        `✅ *Transaksi terkonfirmasi di jaringan*\n\nBayar: ${solStr(order.total)} SOL (termasuk biaya layanan ${solStr(order.fee, 5)} SOL)\n🔗 [Lihat di Solscan](${solscan(signature)})\n\nCek token di dompet dengan /jual.`,
+        `✅ *Transaction confirmed on-chain*\n\nPaid: ${solStr(order.total)} SOL (including ${solStr(order.fee, 5)} SOL service fee)\n🔗 [View on Solscan](${solscan(signature)})\n\nSee your tokens with /jual.`));
 };
 
-// ---------- ALUR JUAL ----------
+bot.command('beli', async (ctx) => {
+    const lang = getUserLang(ctx);
+    const parts = ctx.message.text.trim().split(/\s+/);
+    if (parts.length !== 3) return ctx.reply(t(lang, 'buy_format'));
+    const [, ca, amt] = parts;
+    if (!/^\d+(\.\d{1,9})?$/.test(amt) || Number(amt) <= 0) return ctx.reply(tr(lang, '⚠️ Nominal tidak valid. Contoh: /beli CA 0.05', '⚠️ Invalid amount. Example: /beli CA 0.05'));
+    await previewBuy(ctx, ca, amt);
+});
+
+// ---------- JUAL ----------
 bot.command('jual', async (ctx) => {
     const lang = getUserLang(ctx);
     const user = db[ctx.from.id];
     if (!user?.publicKey) return reply(ctx, t(lang, 'no_wallet'));
-    const loading = await ctx.reply('🔄 Membaca dompet...');
+    const loading = await ctx.reply(tr(lang, '🔄 Membaca token di dompet...', '🔄 Reading tokens in your wallet...'));
     try {
-        const holds = await getHoldings(new PublicKey(user.publicKey));
-        if (!holds.length) return await edit(ctx, loading, 'ℹ️ Tidak ada token di dompet Anda.');
-        
-        // Ambil harga untuk sorting berdasarkan USD
-        const pairs = await dexPairs(holds.map(h => h.mint));
-        const holdsWithUsd = holds.map(h => {
-            const p = bestPair(pairs, h.mint);
-            const price = p ? parseFloat(p.priceUsd) : 0;
-            const amount = Number(h.raw) / 10 ** h.decimals;
-            return { ...h, usdValue: price * amount, symbol: p ? clean(p.baseToken.symbol, 12) : shortAddr(h.mint) };
-        }).sort((a, b) => b.usdValue - a.usdValue).slice(0, 8);
-
-        let text = '💼 *TOKEN DI DOMPET ANDA*\n\n';
+        const holds = (await getHoldings(new PublicKey(user.publicKey))).sort((a, b) => Number(b.raw) / 10 ** b.decimals - Number(a.raw) / 10 ** a.decimals).slice(0, 8);
+        if (!holds.length) return await edit(ctx, loading, tr(lang, 'ℹ️ Tidak ada token di dompet Anda.', 'ℹ️ No tokens in your wallet.'));
+        let names = new Map();
+        try { for (const p of await dexPairs(holds.map((h) => h.mint))) if (!names.has(p.baseToken.address)) names.set(p.baseToken.address, clean(p.baseToken.symbol, 12)); } catch (e) { }
+        let text = tr(lang, '💼 *TOKEN DI DOMPET ANDA*\n_(maks. 8 teratas)_\n\n', '💼 *TOKENS IN YOUR WALLET*\n_(top 8)_\n\n');
         const rows = [];
-        for (const h of holdsWithUsd) {
-            text += `• *${h.symbol}*: ${fmtTokens(h.raw, h.decimals)} (≈ ${fmtUsd(h.usdValue)})\n  \`${h.mint}\`\n`;
-            rows.push([Markup.button.callback(`🔴 Jual 50% ${h.symbol}`, `sl_50_${h.mint}`), Markup.button.callback(`🔴 Jual 100% ${h.symbol}`, `sl_100_${h.mint}`)]);
+        for (const h of holds) {
+            const sym = names.get(h.mint) || shortAddr(h.mint);
+            text += `• *${sym}*: ${fmtTokens(h.raw, h.decimals)}\n  \`${h.mint}\`\n`;
+            rows.push([Markup.button.callback(`🔴 50% ${sym}`, `sl_50_${h.mint}`), Markup.button.callback(`🔴 100% ${sym}`, `sl_100_${h.mint}`)]);
         }
         rows.push([Markup.button.callback(t(lang, 'btn_cancel'), 'batal_aksi')]);
         await edit(ctx, loading, text, Markup.inlineKeyboard(rows));
-    } catch (e) { await edit(ctx, loading, '❌ Gagal membaca dompet.').catch(() => {}); }
+    } catch (e) { console.error('[jual]', e.message); await edit(ctx, loading, tr(lang, '❌ Gagal membaca dompet. Coba lagi.', '❌ Could not read the wallet. Try again.')).catch(() => {}); }
 });
 
 const previewSell = async (ctx, ca, pct) => {
+    const lang = getUserLang(ctx);
     const uid = ctx.from.id;
     const user = db[uid];
-    if (busy.has(uid)) return reply(ctx, '⏳ Masih ada transaksi berjalan.');
-    let msg = await ctx.reply('⏳ Mengambil kuotasi jual...');
+    if (!user?.publicKey) return reply(ctx, t(lang, 'no_wallet'));
+    if (!isPubkey(ca)) return reply(ctx, tr(lang, '❌ Alamat token tidak valid.', '❌ Invalid token address.'));
+    if (busy.has(uid)) return reply(ctx, tr(lang, '⏳ Masih ada transaksi yang berjalan. Tunggu selesai.', '⏳ A transaction is still in progress. Please wait.'));
+    let msg;
     try {
         const pk = new PublicKey(user.publicKey);
         const [bal, holds] = await Promise.all([solanaConnection.getBalance(pk), getHoldings(pk)]);
         const h = holds.find((x) => x.mint === ca);
-        if (!h) return edit(ctx, msg, '❌ Token tidak ada di dompet.');
-        if (bal < MIN_SELL_LAMPORTS) return edit(ctx, msg, `❌ Butuh minimal ${solStr(MIN_SELL_LAMPORTS)} SOL untuk gas fee.`);
-        
+        if (!h) return reply(ctx, tr(lang, '❌ Token ini tidak ada di dompet Anda.', '❌ This token is not in your wallet.'));
+        if (bal < MIN_SELL_LAMPORTS) return reply(ctx, tr(lang, `❌ Menjual butuh minimal ${solStr(MIN_SELL_LAMPORTS)} SOL di dompet untuk biaya jaringan dan rent sementara. Saldo: ${solStr(bal)} SOL.`, `❌ Selling needs at least ${solStr(MIN_SELL_LAMPORTS)} SOL in the wallet for network fees and temporary rent. Balance: ${solStr(bal)} SOL.`));
         const raw = (h.raw * BigInt(pct)) / 100n;
+        if (raw <= 0n) return reply(ctx, tr(lang, '❌ Jumlah terlalu kecil.', '❌ Amount too small.'));
+        msg = await ctx.reply(tr(lang, '⏳ Mengambil kuotasi...', '⏳ Fetching quote...'));
         const jup = await jupBuild({ inputMint: ca, outputMint: WSOL, amount: raw.toString(), taker: user.publicKey });
         const out = BigInt(jup.outAmount);
+        if (out <= 0n) return await edit(ctx, msg, tr(lang, '❌ Tidak ada rute swap untuk token ini.', '❌ No swap route for this token.'));
         const fee = (out * BigInt(FEE_BPS)) / 10000n;
-        
+        const minOut = jup.otherAmountThreshold !== undefined ? BigInt(jup.otherAmountThreshold) : null;
         const id = newOrder({ type: 'sell', userId: uid, ca, raw: raw.toString(), outAmount: out.toString() });
-        const text = `🧾 *KONFIRMASI JUAL ${pct}%*\n\nToken: \`${ca}\`\nEstimasi bersih: *≈ ${solStr(out - fee, 5)} SOL*\n\n⏱ Berlaku 60 detik.`;
-        await edit(ctx, msg, text, Markup.inlineKeyboard([[Markup.button.callback(`✅ Konfirmasi Jual`, 'cf_' + id)], [Markup.button.callback('❌ Batal', 'batal_aksi')]]));
-    } catch (e) { await edit(ctx, msg, '❌ Gagal: ' + e.message).catch(() => {}); }
+        const text = tr(lang,
+            `🧾 *KONFIRMASI JUAL ${pct}%*\n\nToken: \`${ca}\`\nDijual: *${fmtTokens(raw, h.decimals)}*\n\nEstimasi hasil kotor: *≈ ${solStr(out, 5)} SOL*\n• Biaya layanan (${FEE_PCT_TEXT}%): ${solStr(fee, 5)} SOL\n• Estimasi bersih: *≈ ${solStr(out - fee, 5)} SOL*\n${minOut !== null ? `Minimum kotor (slippage ${(SLIPPAGE_BPS / 100).toFixed(1)}%): ${solStr(minOut, 5)} SOL\n` : ''}\nBiaya jaringan: ± ${solStr(PRIORITY_LAMPORTS + 5000, 4)} SOL.\n\n⏱ Berlaku 60 detik.`,
+            `🧾 *CONFIRM SELL ${pct}%*\n\nToken: \`${ca}\`\nSelling: *${fmtTokens(raw, h.decimals)}*\n\nEstimated gross: *≈ ${solStr(out, 5)} SOL*\n• Service fee (${FEE_PCT_TEXT}%): ${solStr(fee, 5)} SOL\n• Estimated net: *≈ ${solStr(out - fee, 5)} SOL*\n${minOut !== null ? `Minimum gross (slippage ${(SLIPPAGE_BPS / 100).toFixed(1)}%): ${solStr(minOut, 5)} SOL\n` : ''}\nNetwork fee: ~${solStr(PRIORITY_LAMPORTS + 5000, 4)} SOL.\n\n⏱ Valid for 60 seconds.`);
+        await edit(ctx, msg, text, confirmKb(lang, id, tr(lang, `✅ Konfirmasi jual ${pct}%`, `✅ Confirm sell ${pct}%`)));
+    } catch (e) {
+        console.error('[preview jual]', e.message);
+        const text = friendlyError(lang, e);
+        if (msg) await edit(ctx, msg, text).catch(() => {}); else await reply(ctx, text);
+    }
 };
 
 const runSell = async (ctx, order) => {
+    const lang = getUserLang(ctx);
     const user = db[order.userId];
     const kp = loadKeypair(user);
-    const prog = await ctx.reply('⏳ Mengirim transaksi jual...');
-    try {
-        const jup = await jupBuild({ inputMint: order.ca, outputMint: WSOL, amount: order.raw, taker: user.publicKey });
-        const out = BigInt(jup.outAmount);
-        const fee = Number((out * BigInt(FEE_BPS)) / 10000n);
-        const { signature } = await buildAndSend({ keypair: kp, jup, feeLamports: fee, feePosition: 'after' });
-        await edit(ctx, prog, `✅ *Penjualan Berhasil*\nEstimasi kotor: ≈ ${solStr(out, 5)} SOL\n🔗 [Lihat di Solscan](${solscan(signature)})`);
-    } catch (e) { await edit(ctx, prog, `❌ Gagal: ${e.message}`); }
+    const jup = await jupBuild({ inputMint: order.ca, outputMint: WSOL, amount: order.raw, taker: user.publicKey });
+    const out = BigInt(jup.outAmount);
+    if (out * 100n < BigInt(order.outAmount) * 97n) {
+        return reply(ctx, tr(lang, '🛑 Dibatalkan: harga bergeser lebih dari 3% sejak layar konfirmasi. Tidak ada yang dijual. Ulangi.', '🛑 Cancelled: price moved more than 3% since the confirmation screen. Nothing was sold. Please retry.'));
+    }
+    const fee = Number((out * BigInt(FEE_BPS)) / 10000n);
+    const prog = await ctx.reply(tr(lang, '⏳ Mengirim transaksi dan menunggu konfirmasi jaringan...', '⏳ Sending transaction and waiting for network confirmation...'));
+    const { signature } = await buildAndSend({ keypair: kp, jup, feeLamports: fee, feePosition: 'after' });
+    await edit(ctx, prog, tr(lang,
+        `✅ *Penjualan terkonfirmasi di jaringan*\n\nEstimasi hasil kotor: ≈ ${solStr(out, 5)} SOL (biaya layanan ${solStr(fee, 5)} SOL)\n🔗 [Lihat di Solscan](${solscan(signature)})\n\nCek saldo dengan /saldo.`,
+        `✅ *Sale confirmed on-chain*\n\nEstimated gross: ≈ ${solStr(out, 5)} SOL (service fee ${solStr(fee, 5)} SOL)\n🔗 [View on Solscan](${solscan(signature)})\n\nCheck your balance with /saldo.`));
 };
 
-// ---------- TARIK & EXPORT ----------
+// ---------- TARIK ----------
 bot.command('tarik', async (ctx) => {
+    const lang = getUserLang(ctx);
     const uid = ctx.from.id;
     const user = db[uid];
-    if (!user?.publicKey) return reply(ctx, '❌ Buat dompet dulu.');
+    if (!user?.publicKey) return reply(ctx, t(lang, 'no_wallet'));
     const parts = ctx.message.text.trim().split(/\s+/);
-    if (parts.length !== 2) return reply(ctx, '⚠️ Format: /tarik <ALAMAT_PHANTOM>');
-    
+    if (parts.length !== 2) return reply(ctx, t(lang, 'withdraw_format'));
+    if (busy.has(uid)) return reply(ctx, tr(lang, '⏳ Masih ada transaksi yang berjalan. Tunggu selesai.', '⏳ A transaction is still in progress. Please wait.'));
+
+    let dest;
+    try { dest = new PublicKey(parts[1]); } catch (e) { return reply(ctx, tr(lang, '❌ Alamat tujuan tidak valid.', '❌ Invalid destination address.')); }
+    if (!PublicKey.isOnCurve(dest.toBytes())) return reply(ctx, tr(lang, '❌ Alamat tujuan bukan dompet biasa. Ditolak.', '❌ The destination is not a normal wallet. Refused.'));
+    if (dest.toBase58() === user.publicKey) return reply(ctx, tr(lang, '❌ Alamat tujuan sama dengan dompet bot Anda.', '❌ The destination is your own bot wallet.'));
+
     try {
-        const dest = new PublicKey(parts[1]);
-        const bal = await solanaConnection.getBalance(new PublicKey(user.publicKey));
+        const pk = new PublicKey(user.publicKey);
+        const bal = await solanaConnection.getBalance(pk);
         const amount = bal - WITHDRAW_FEE;
-        if (amount <= 0) return reply(ctx, '❌ Saldo tidak cukup.');
+        if (amount <= 0) return reply(ctx, t(lang, 'withdraw_insufficient'));
+        const dstInfo = await solanaConnection.getAccountInfo(dest);
+        if (dstInfo && !dstInfo.owner.equals(SystemProgram.programId)) return reply(ctx, tr(lang, '❌ Alamat tujuan dimiliki program lain. Ditolak.', '❌ The destination is owned by another program. Refused.'));
         
         const id = newOrder({ type: 'withdraw', userId: uid, dest: dest.toBase58() });
-        await reply(ctx, `🧾 *KONFIRMASI TARIK*\nKe: \`${dest.toBase58()}\`\nJumlah: *≈ ${solStr(amount, 5)} SOL*\n\n⏱ Berlaku 60 detik.`, 
-            Markup.inlineKeyboard([[Markup.button.callback('✅ Konfirmasi Tarik', 'cf_' + id)], [Markup.button.callback('❌ Batal', 'batal_aksi')]]));
-    } catch (e) { reply(ctx, '❌ Alamat tidak valid.'); }
+        await reply(ctx, tr(lang,
+            `🧾 *KONFIRMASI TARIK*\n\nKe: \`${dest.toBase58()}\`\nJumlah: *≈ ${solStr(amount, 5)} SOL*\n\nPeriksa alamat. Transaksi tidak bisa dibatalkan.\n\n⏱ Berlaku 60 detik.`,
+            `🧾 *CONFIRM WITHDRAWAL*\n\nTo: \`${dest.toBase58()}\`\nAmount: *≈ ${solStr(amount, 5)} SOL*\n\nCheck the address. This cannot be undone.\n\n⏱ Valid for 60 seconds.`),
+        confirmKb(lang, id, tr(lang, '✅ Konfirmasi tarik', '✅ Confirm withdrawal')));
+    } catch (e) { console.error('[tarik]', e.message); await reply(ctx, t(lang, 'withdraw_fail')); }
 });
 
 const runWithdraw = async (ctx, order) => {
+    const lang = getUserLang(ctx);
     const kp = loadKeypair(db[order.userId]);
     const bal = await solanaConnection.getBalance(kp.publicKey);
     const amount = bal - WITHDRAW_FEE;
-    const prog = await ctx.reply('⚙️ Memproses penarikan...');
+    if (amount <= 0) return reply(ctx, t(lang, 'withdraw_insufficient'));
+    const prog = await ctx.reply(t(lang, 'withdraw_process'));
+    const tx = new Transaction().add(SystemProgram.transfer({ fromPubkey: kp.publicKey, toPubkey: new PublicKey(order.dest), lamports: amount }));
+    const { blockhash, lastValidBlockHeight } = await solanaConnection.getLatestBlockhash('confirmed');
+    tx.recentBlockhash = blockhash;
+    tx.feePayer = kp.publicKey;
+    tx.sign(kp);
+    const signature = await solanaConnection.sendRawTransaction(tx.serialize(), { maxRetries: 3 });
     try {
-        const tx = new Transaction().add(SystemProgram.transfer({ fromPubkey: kp.publicKey, toPubkey: new PublicKey(order.dest), lamports: amount }));
-        const { blockhash } = await solanaConnection.getLatestBlockhash('confirmed');
-        tx.recentBlockhash = blockhash;
-        tx.feePayer = kp.publicKey;
-        tx.sign(kp);
-        const signature = await solanaConnection.sendRawTransaction(tx.serialize(), { maxRetries: 3 });
-        await edit(ctx, prog, `✅ *Penarikan Berhasil*\n🔗 [Lihat di Solscan](${solscan(signature)})`);
-    } catch (e) { await edit(ctx, prog, `❌ Gagal: ${e.message}`); }
+        const conf = await solanaConnection.confirmTransaction({ signature, blockhash, lastValidBlockHeight }, 'confirmed');
+        if (conf.value.err) { const e = new Error('TX_FAILED ' + JSON.stringify(conf.value.err)); e.signature = signature; throw e; }
+    } catch (e) { e.signature = e.signature || signature; if (!/TX_FAILED/.test(e.message)) e.unconfirmed = true; throw e; }
+    await edit(ctx, prog, t(lang, 'withdraw_success', { amount: solStr(amount, 4), address: order.dest, txid: signature }));
 };
 
+// ---------- EXPORT ----------
 bot.command('export', async (ctx) => {
-    if (!db[ctx.from.id]?.publicKey) return reply(ctx, '❌ Buat dompet dulu.');
-    await reply(ctx, '⚠️ *EKSPOR PRIVATE KEY*\nSiapa pun yang memegang kunci ini bisa menguras dompet Anda. Pesan akan dihapus dalam 60 detik.',
-        Markup.inlineKeyboard([[Markup.button.callback('✅ Saya paham, tampilkan', 'ex_ok')], [Markup.button.callback('❌ Batal', 'batal_aksi')]]));
+    const lang = getUserLang(ctx);
+    if (!db[ctx.from.id]?.publicKey) return reply(ctx, t(lang, 'no_wallet'));
+    await reply(ctx, tr(lang,
+        '⚠️ *EKSPOR PRIVATE KEY*\n\nSiapa pun yang memegang kunci ini bisa menguras seluruh dompet Anda. Jangan kirim ke siapa pun (termasuk "admin"), jangan screenshot, dan jangan tempel ke chat AI.\n\nPesan berisi kunci akan *dihapus otomatis setelah 60 detik*. Simpan di tempat aman (password manager / catatan offline). Lanjutkan?',
+        '⚠️ *EXPORT PRIVATE KEY*\n\nAnyone holding this key can drain your entire wallet. Never share it (not even with "admins"), never screenshot it, never paste it into an AI chat.\n\nThe message containing the key is *deleted automatically after 60 seconds*. Store it somewhere safe (password manager / offline note). Continue?'),
+        Markup.inlineKeyboard([[Markup.button.callback(tr(lang, '✅ Saya paham, tampilkan', '✅ I understand, show it'), 'ex_ok')], [Markup.button.callback(t(lang, 'btn_cancel'), 'batal_aksi')]]));
 });
 
-// ---------- LISTENER & CALLBACK ----------
-const seedRe = /^([a-zA-Z]+\s){11,23}[a-zA-Z]+$/;
+const revealKey = async (ctx) => {
+    const lang = getUserLang(ctx);
+    const msgDate = ctx.callbackQuery.message?.date;
+    if (!msgDate || Date.now() / 1000 - msgDate > 300) return ack(ctx, tr(lang, 'Kedaluwarsa. Ketik /export lagi.', 'Expired. Type /export again.'), true);
+    const user = db[ctx.from.id];
+    if (!user?.publicKey) return ack(ctx, '...');
+    let kp;
+    try { kp = loadKeypair(user); } catch (e) { console.error('[export] kunci tidak bisa dibuka:', e.message); return ack(ctx, tr(lang, 'Kunci tidak bisa dibuka. Hubungi admin.', 'Key cannot be opened. Contact the admin.'), true); }
+    await ack(ctx, '');
+    try { await ctx.deleteMessage(); } catch (e) { }
+    const sent = await reply(ctx, tr(lang,
+        `🔑 *PRIVATE KEY (base58)*\n\n\`${b58encode(kp.secretKey)}\`\n\nDi Phantom: Tambah Dompet → Impor Private Key → tempel kode ini.\n_Pesan ini dihapus otomatis dalam 60 detik. Jangan screenshot._`,
+        `🔑 *PRIVATE KEY (base58)*\n\n\`${b58encode(kp.secretKey)}\`\n\nIn Phantom: Add Wallet → Import Private Key → paste this code.\n_This message is deleted automatically in 60 seconds. Do not screenshot._`),
+        { protect_content: true });
+    const chatId = ctx.chat.id;
+    setTimeout(() => ctx.telegram.deleteMessage(chatId, sent.message_id).catch(() => {}), 60_000);
+};
+
+// ---------- PASTE CA / PERLINDUNGAN SALAH-PASTE KUNCI ----------
 const secretRe = /^\s*(\[?\s*(?:\d{1,3}\s*,\s*){60,}\d{1,3}\s*\]?|[1-9A-HJ-NP-Za-km-z]{80,90})\s*$/;
-bot.hears([secretRe, seedRe], async (ctx) => {
-    try { await ctx.deleteMessage(); } catch (e) {}
-    await reply(ctx, '🛑 Pesan Anda tampak seperti *Private Key / Seed Phrase*, jadi saya hapus demi keamanan Anda.');
+bot.hears(secretRe, async (ctx) => {
+    const lang = getUserLang(ctx);
+    try { await ctx.deleteMessage(); } catch (e) { }
+    await reply(ctx, tr(lang, '🛑 Pesan Anda tampak seperti *private key*, jadi saya hapus. JANGAN tempel kunci ke chat mana pun. Jika itu kunci dompet yang berisi dana, pindahkan dana ke dompet baru sekarang.', '🛑 Your message looks like a *private key*, so I deleted it. NEVER paste keys into any chat. If it is a funded wallet, move the funds to a new wallet now.'));
 });
 
 const caRe = /^\s*([1-9A-HJ-NP-Za-km-z]{32,44})\s*$/;
 bot.hears(caRe, async (ctx) => {
     const ca = ctx.match[1];
-    if (isPubkey(ca)) await previewBuy(ctx, ca, '0.1'); // Default preview 0.1 SOL
+    if (!isPubkey(ca)) return;
+    await scanToken(ctx, ca);
 });
 
+// ---------- TOMBOL ----------
 bot.on('callback_query', async (ctx) => {
+    const lang = getUserLang(ctx);
     const data = ctx.callbackQuery.data;
     if (!data) return;
     try {
-        if (data === 'batal_aksi') { await ack(ctx, 'Dibatalkan'); return await ctx.deleteMessage().catch(() => {}); }
-        if (data === 'ex_ok') {
-            const kp = loadKeypair(db[ctx.from.id]);
-            await ack(ctx, '');
-            try { await ctx.deleteMessage(); } catch (e) {}
-            const sent = await reply(ctx, `🔑 *PRIVATE KEY*\n\`${b58encode(kp.secretKey)}\`\n_Dihapus dalam 60 detik._`, { protect_content: true });
-            setTimeout(() => ctx.telegram.deleteMessage(ctx.chat.id, sent.message_id).catch(() => {}), 60_000);
-            return;
-        }
-        if (data.startsWith('preview_')) {
+        if (data === 'batal_aksi') { await ack(ctx, t(lang, 'cb_cancel')); return await ctx.deleteMessage().catch(() => {}); }
+        if (data === 'ex_ok') return await revealKey(ctx);
+
+        if (data.startsWith('buy_')) {
             const [, nominal, ca] = data.split('_');
-            await ack(ctx, 'Memproses...');
+            if (!['0.1', '0.5', '1.0', 'max'].includes(nominal) || !ca) return ack(ctx, '...');
+            await ack(ctx, t(lang, 'cb_process'));
             return await previewBuy(ctx, ca, nominal);
         }
         if (data.startsWith('sl_')) {
             const [, pct, ca] = data.split('_');
-            await ack(ctx, 'Memproses...');
+            if (!['50', '100'].includes(pct) || !ca) return ack(ctx, '...');
+            await ack(ctx, t(lang, 'cb_process'));
             return await previewSell(ctx, ca, Number(pct));
         }
-        if (data.startsWith('cf_')) {
-            const id = data.slice(3);
-            const uid = ctx.from.id;
-            const order = orders.get(id);
-            if (!order || order.userId !== uid) return ack(ctx, 'Kedaluwarsa.', true);
-            if (busy.has(uid)) return ack(ctx, 'Tunggu transaksi sebelumnya selesai.', true);
-            
-            orders.delete(id);   
-            busy.add(uid);
-            ack(ctx, 'Mengeksekusi...');
-            ctx.editMessageReplyMarkup(undefined).catch(() => {});
-            
-            // ASYNC EXECUTION (NON-BLOCKING)
-            const execute = async () => {
-                try {
-                    if (order.type === 'buy') await runBuy(ctx, order);
-                    else if (order.type === 'sell') await runSell(ctx, order);
-                    else if (order.type === 'withdraw') await runWithdraw(ctx, order);
-                } finally { busy.delete(uid); }
-            };
-            execute(); // Fire and forget
+        if (data.startsWith('custom_')) {
+            const ca = data.replace('custom_', '');
+            await ack(ctx, t(lang, 'cb_custom_opened'));
+            return await reply(ctx, t(lang, 'cb_custom_msg', { ca }));
         }
+        if (data.startsWith('cf_')) return await confirmOrder(ctx, data.slice(3));
     } catch (e) { console.error('[callback]', e.message); }
 });
 
+const confirmOrder = async (ctx, id) => {
+    const lang = getUserLang(ctx);
+    const uid = ctx.from.id;
+    const order = orders.get(id);
+    if (!order || order.userId !== uid) return ack(ctx, tr(lang, 'Konfirmasi tidak ditemukan / sudah dipakai.', 'Confirmation not found / already used.'), true);
+    if (Date.now() - order.createdAt > ORDER_TTL_MS) {
+        orders.delete(id);
+        await ack(ctx, tr(lang, 'Kedaluwarsa. Ulangi dari awal.', 'Expired. Please start again.'), true);
+        return ctx.deleteMessage().catch(() => {});
+    }
+    if (busy.has(uid)) return ack(ctx, tr(lang, 'Masih ada transaksi berjalan.', 'A transaction is still in progress.'), true);
+
+    orders.delete(id);   
+    busy.add(uid);
+    try {
+        await ack(ctx, t(lang, 'cb_process'));
+        await ctx.editMessageReplyMarkup(undefined).catch(() => {});
+        if (order.type === 'buy') await runBuy(ctx, order);
+        else if (order.type === 'sell') await runSell(ctx, order);
+        else if (order.type === 'withdraw') await runWithdraw(ctx, order);
+    } catch (e) {
+        console.error(`[${order.type}]`, e.message, e.logs ? e.logs.slice(-6).join(' | ') : '');
+        await reply(ctx, order.type === 'withdraw'
+            ? (e.signature ? friendlyError(lang, e) : t(lang, 'withdraw_fail'))
+            : friendlyError(lang, e)).catch(() => {});
+    } finally { busy.delete(uid); }
+};
+
 // =====================================================================
-// 9. STARTUP & SHUTDOWN
+// 10. JALANKAN
 // =====================================================================
-bot.catch((err) => console.error(`[bot.catch]:`, err.message));
-process.on('unhandledRejection', (e) => console.error('[unhandledRejection]', e?.message || e));
+bot.catch((err, ctx) => console.error(`[bot.catch] update ${ctx?.update?.update_id}:`, err.message));
+process.on('unhandledRejection', (e) => console.error('[unhandledRejection]', e && e.message ? e.message : e));
 
 const shutdown = async (sig) => {
-    console.log(`Menerima ${sig}, menunggu transaksi selesai...`);
-    try { bot.stop(sig); } catch (e) {}
-    
-    // Tunggu sampai semua user selesai transaksi (Maks 10 detik)
-    let waitCount = 0;
-    while (busy.size > 0 && waitCount < 10) {
-        await new Promise(r => setTimeout(r, 1000));
-        waitCount++;
-    }
-    try { await saveChain; } catch (e) {}
+    console.log(`Menerima ${sig}, berhenti...`);
+    try { bot.stop(sig); } catch (e) { }
+    try { await saveChain; } catch (e) { }
     process.exit(0);
 };
 
 const main = async () => {
     await migrateDb();
     console.log(`📦 Database: ${DB_FILE} (${Object.keys(db).length} user)`);
-    
-    // CEK SALDO OPERATOR (RENT-EXEMPTION)
-    try {
-        const opBal = await solanaConnection.getBalance(OPERATOR_PK);
-        if (opBal < 10000000) { // Kurang dari 0.01 SOL
-            console.error('\n🚨 ================================================== 🚨');
-            console.error('🚨 FATAL WARNING: SALDO DOMPET OPERATOR ANDA KOSONG! 🚨');
-            console.error(`🚨 Segera isi ${OPERATOR_PK.toBase58()} minimal 0.01 SOL.`);
-            console.error('🚨 Jika tidak, semua pemotongan fee 0.7% akan GAGAL TOTAL.');
-            console.error('🚨 ================================================== 🚨\n');
-        } else {
-            console.log(`💸 Fee ${FEE_PCT_TEXT}% -> ${OPERATOR_PK.toBase58()} (Saldo Aman)`);
-        }
-    } catch (e) { console.log("Gagal mengecek saldo operator saat startup."); }
-
+    console.log(`💸 Fee ${FEE_PCT_TEXT}% -> operator ${OPERATOR_PK.toBase58()}`);
     process.once('SIGINT', () => shutdown('SIGINT'));
     process.once('SIGTERM', () => shutdown('SIGTERM'));
-    await bot.launch({ dropPendingUpdates: false }, () => console.log('🤖 HOLY GRAIL ENGINE (ENTERPRISE V2) online'));
+    await bot.launch({ dropPendingUpdates: false }, () => console.log('🤖 HOLY GRAIL ENGINE (ENTERPRISE) online'));
 };
 
 if (require.main === module) {
