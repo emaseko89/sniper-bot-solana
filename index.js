@@ -11,7 +11,7 @@ const locales = require('./locales');
 const bot = new Telegraf(process.env.TELEGRAM_TOKEN);
 const solanaConnection = new Connection(process.env.HELIUS_RPC_URL, 'confirmed');
 
-// === PERBAIKAN BUG 1: LOKASI DATABASE DIPINDAH KE FOLDER PERSISTEN ===
+// === LOKASI DATABASE DI DALAM VOLUME PERMANEN ===
 const DB_DIR = './data';
 const DB_FILE = `${DB_DIR}/database.json`;
 
@@ -64,7 +64,6 @@ const simpanDatabase = async (data) => {
     }
     dbLock = true;
     try {
-        // Pastikan folder ./data ada sebelum menyimpan
         if (!fs.existsSync(DB_DIR)) {
             fs.mkdirSync(DB_DIR, { recursive: true });
         }
@@ -85,7 +84,6 @@ const t = (lang, key, params = {}) => {
     return text;
 };
 
-// 3. Fungsi Pendeteksi Bahasa Otomatis
 const getUserLang = (ctx) => {
     let lang = ctx.from.language_code?.substring(0, 2) || 'en';
     if (!locales[lang]) lang = 'en'; 
@@ -154,13 +152,11 @@ bot.command('saldo', async (ctx) => {
     } catch (error) { ctx.reply(t(lang, 'balance_error')); }
 });
 
-// === PERBAIKAN BUG 2: RADAR REAL-TIME DINAMIS ===
 bot.command('radar', async (ctx) => {
     const lang = getUserLang(ctx);
     const loadingMsg = await ctx.reply(t(lang, 'radar_scanning'), { parse_mode: 'Markdown' });
     
     try {
-        // Mengambil data pencarian global DexScreener untuk ekosistem Solana
         const respon = await fetch("https://api.dexscreener.com/latest/dex/search?q=solana");
         const data = await respon.json();
         
@@ -170,13 +166,11 @@ bot.command('radar', async (ctx) => {
         const tokenTercatat = new Set(); 
         
         if (data.pairs && data.pairs.length > 0) {
-            // Filter HANYA jaringan Solana dan urutkan berdasarkan Volume 24 Jam Tertinggi
             let solanaPairs = data.pairs.filter(p => p.chainId === 'solana' && p.volume && p.volume.h24 > 0);
             solanaPairs.sort((a, b) => b.volume.h24 - a.volume.h24);
 
             for (let i = 0; i < solanaPairs.length; i++) {
                 const pair = solanaPairs[i];
-                // Pastikan tidak ada koin duplikat yang masuk ke radar
                 if (!tokenTercatat.has(pair.baseToken.address)) {
                     tokenTercatat.add(pair.baseToken.address);
                     count++;
@@ -191,8 +185,6 @@ bot.command('radar', async (ctx) => {
                     });
                     
                     tombolRadar.push([Markup.button.callback(t(lang, 'radar_btn_snipe', { symbol: pair.baseToken.symbol }), "buy_0.1_" + pair.baseToken.address)]);
-                    
-                    // Ambil Top 3 Koin Paling Ramai Detik Ini
                     if (count >= 3) break; 
                 }
             }
@@ -483,5 +475,5 @@ bot.on('callback_query', async (ctx) => {
 });
 
 bot.launch().then(() => {
-    console.log('🤖 MESIN SALAMI SLICING GLOBAL: ONLINE & SIAP TEMPUR (PERSISTENT DB & REALTIME RADAR)');
+    console.log('🤖 MESIN SALAMI SLICING GLOBAL: ONLINE (VOLUME PERSISTENT & REALTIME RADAR)');
 });
